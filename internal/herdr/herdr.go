@@ -37,9 +37,25 @@ type pane struct {
 	} `json:"agent_session"`
 }
 
+func (h CLI) parseErrorEnvelope(data []byte) string {
+	var env struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return ""
+	}
+	if len(env.Error) > 0 && string(env.Error) != "null" {
+		return string(env.Error)
+	}
+	return ""
+}
+
 func (h CLI) call(ctx context.Context, out any, args ...string) error {
 	data, err := h.Exec(ctx, "", args...)
 	if err != nil {
+		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
+			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
+		}
 		return err
 	}
 	var env struct {
@@ -112,9 +128,17 @@ func (h CLI) CreateTab(ctx context.Context, workspaceID, cwd, label string) (str
 }
 
 // Run passes command to herdr as a single string to avoid flag parsing issues.
+// Arguments containing spaces must be pre-quoted by the caller.
 func (h CLI) Run(ctx context.Context, paneID string, command ...string) error {
-	_, err := h.Exec(ctx, "", "pane", "run", paneID, strings.Join(command, " "))
-	return err
+	args := []string{"pane", "run", paneID, strings.Join(command, " ")}
+	data, err := h.Exec(ctx, "", args...)
+	if err != nil {
+		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
+			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (h CLI) PaneForSession(ctx context.Context, sessionID string) (string, bool, error) {
@@ -133,6 +157,13 @@ func (h CLI) PaneForSession(ctx context.Context, sessionID string) (string, bool
 }
 
 func (h CLI) Focus(ctx context.Context, paneID string) error {
-	_, err := h.Exec(ctx, "", "agent", "focus", paneID)
-	return err
+	args := []string{"agent", "focus", paneID}
+	data, err := h.Exec(ctx, "", args...)
+	if err != nil {
+		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
+			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
+		}
+		return err
+	}
+	return nil
 }

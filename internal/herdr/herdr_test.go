@@ -2,6 +2,7 @@ package herdr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -87,5 +88,31 @@ func TestErrorEnvelope(t *testing.T) {
 	f := &fakeRun{out: map[string]string{"pane list": `{"id":"x","error":{"message":"server not running"}}`}}
 	if _, _, err := (CLI{Exec: f.run}).WorkspaceFor(context.Background(), "/r"); err == nil || !strings.Contains(err.Error(), "server not running") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestErrorEnvelopeOnCommandFailure(t *testing.T) {
+	failRun := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		k := strings.Join(args, " ")
+		if k == "pane list" {
+			return []byte(`{"id":"x","error":{"code":"server_not_running","message":"server not running"}}`), fmt.Errorf("exit status 1")
+		}
+		if k == "pane run w1:p2 opencode" {
+			return []byte(`{"id":"y","error":{"code":"pane_not_found","message":"pane not found"}}`), fmt.Errorf("exit status 1")
+		}
+		return nil, nil
+	}
+	h := CLI{Exec: failRun}
+
+	// Test call-based method (WorkspaceFor)
+	_, _, err := h.WorkspaceFor(context.Background(), "/repo")
+	if err == nil || !strings.Contains(err.Error(), "server not running") {
+		t.Fatalf("WorkspaceFor err = %v, want to contain 'server not running'", err)
+	}
+
+	// Test Run method
+	err = h.Run(context.Background(), "w1:p2", "opencode")
+	if err == nil || !strings.Contains(err.Error(), "pane not found") {
+		t.Fatalf("Run err = %v, want to contain 'pane not found'", err)
 	}
 }
