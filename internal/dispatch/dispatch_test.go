@@ -322,3 +322,54 @@ func TestTargetFor(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// hungOpenCode blocks the named steps until their context ends.
+type hungOpenCode struct {
+	*recorder
+	create, prompt, del bool
+}
+
+func wait(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+
+func (h hungOpenCode) CreateSession(ctx context.Context, in opencode.CreateSession) (opencode.Session, error) {
+	if h.create {
+		return opencode.Session{}, wait(ctx)
+	}
+	return h.recorder.CreateSession(ctx, in)
+}
+
+func (h hungOpenCode) Prompt(ctx context.Context, id, text string) error {
+	if h.prompt {
+		return wait(ctx)
+	}
+	return h.recorder.Prompt(ctx, id, text)
+}
+
+func (h hungOpenCode) DeleteSession(ctx context.Context, id string) error {
+	if h.del {
+		return wait(ctx)
+	}
+	return h.recorder.DeleteSession(ctx, id)
+}
+
+func TestRunBoundsOpenCodeSteps(t *testing.T) {
+	old := stepTimeout
+	stepTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { stepTimeout = old })
+	for name, h := range map[string]hungOpenCode{
+		"createsession": {create: true},
+		"prompt":        {prompt: true},
+		"undo":          {prompt: true, del: true},
+	} {
+		h.recorder = &recorder{added: gitwt.Added{Worktree: true, Branch: true}}
+		d := deps(h.recorder)
+		d.OpenCode = h
+		_, err := Run(context.Background(), d, req)
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if last := h.recorder.log[len(h.recorder.log)-1]; last != "unclaim se-1" {
+			t.Errorf("%s: undo did not finish, log = %v", name, h.recorder.log)
+		}
+	}
+}

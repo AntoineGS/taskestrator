@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/config"
 	"github.com/AntoineGS/taskestrator/internal/discover"
@@ -48,6 +49,9 @@ type Result struct {
 	PaneID    string
 	TabError  error
 }
+
+// stepTimeout bounds each OpenCode HTTP step so a hung service cannot stall a dispatch.
+var stepTimeout = 30 * time.Second
 
 // Run performs the spec's seven dispatch steps. On a failure before the
 // prompt is sent, completed steps are undone in reverse order.
@@ -100,13 +104,19 @@ func Run(ctx context.Context, d Deps, req Request) (Result, error) {
 		}
 	}
 
-	sess, err := d.OpenCode.CreateSession(ctx, opencode.CreateSession{
+	sctx, cancel := context.WithTimeout(ctx, stepTimeout)
+	sess, err := d.OpenCode.CreateSession(sctx, opencode.CreateSession{
 		Title: id + ": " + req.Task.Title, Directory: wt, Metadata: map[string]string{"tsk.task": id},
 	})
+	cancel()
 	if err != nil {
 		return fail("session", err)
 	}
-	undo = append(undo, func(c context.Context) error { return d.OpenCode.DeleteSession(c, sess.ID) })
+	undo = append(undo, func(c context.Context) error {
+		c, cancel := context.WithTimeout(c, stepTimeout)
+		defer cancel()
+		return d.OpenCode.DeleteSession(c, sess.ID)
+	})
 
 	meta := map[string]string{tracker.MetaSession: sess.ID, tracker.MetaWorktree: wt, tracker.MetaBranch: branch}
 	if err := d.Tracker.SetMetadata(ctx, repo, id, meta); err != nil {
@@ -116,7 +126,10 @@ func Run(ctx context.Context, d Deps, req Request) (Result, error) {
 		return d.Tracker.UnsetMetadata(c, repo, id, tracker.MetaSession, tracker.MetaWorktree, tracker.MetaBranch)
 	})
 
-	if err := d.OpenCode.Prompt(ctx, sess.ID, text); err != nil {
+	pctx, cancel := context.WithTimeout(ctx, stepTimeout)
+	err = d.OpenCode.Prompt(pctx, sess.ID, text)
+	cancel()
+	if err != nil {
 		return fail("prompt", err)
 	}
 
