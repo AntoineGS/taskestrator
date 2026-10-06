@@ -240,16 +240,24 @@ Already confirmed read-only on 2026-10-06, from the live OpenAPI document
 - `herdr tab create` returns the new tab's `root_pane`; `herdr agent list`
   reports each pane's `agent_session.value`.
 
-Still to exercise against the running services in the first implementation
-task, with results recorded in `docs/contract-check.md`. If any fails, this
-spec is revised before building on it.
+Exercised against the running services on 2026-10-06; results are in
+`docs/contract-check.md`, including a "Spec deviations" section.
 
 - `opencode --session <id>` attaches to a session created through the API.
 - `POST /api/session/{id}/prompt` starts work with no window attached.
-- A question raised by the agent produces `form.created` and shows in the
-  session's form list; going idle produces `session.idle` or
-  `session.execution.succeeded`.
+- A question raised by the agent produces `form.created` (session in
+  `data.form.sessionID`) and shows in the session's form list. Cancelling the
+  form emits `form.cancelled` (session in `data.sessionID`) and ends the run
+  with `session.execution.interrupted`. A normally completed run ends with
+  `session.execution.succeeded`; `session.idle` is never emitted, and a failed
+  run ends with `session.execution.failed`.
+- Sessions created without a `model` use OpenCode's default model, which
+  failed in the check with a malformed tool call; the check used
+  `model: {providerID, id}` explicitly.
+- `GET /api/session/active` returns a map of session ID to `{type}`.
 - `bd list --json` includes a `metadata` object; `bd update --assignee ""`
-  clears the assignee; how `--claim` fails on a task claimed by another actor.
-- `herdr pane run` starts a command in a new tab's pane, the pane then reports
-  the session in `agent list`, and `herdr agent focus <pane>` switches to it.
+  leaves `assignee` as `null`; `--claim` on a task claimed by another actor
+  exits 1 with "issue already claimed by <actor>" on stderr.
+- `herdr pane run <pane> "<command>"` takes the command as one quoted string
+  and prints nothing; the pane then reports the session in `agent list` after
+  a few seconds, and `herdr agent focus <pane>` returns the agent as focused.
