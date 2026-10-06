@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/config"
 	"github.com/AntoineGS/taskestrator/internal/discover"
@@ -17,12 +18,13 @@ import (
 // recorder fakes every dispatch dependency. It logs calls in order and fails
 // the call whose log entry starts with failOn.
 type recorder struct {
-	log      []string
-	failOn   string
-	added    gitwt.Added
-	panes    map[string]string
-	hasWS    bool
-	promptIn string
+	log        []string
+	failOn     string
+	added      gitwt.Added
+	panes      map[string]string
+	hasWS      bool
+	focusFails int
+	promptIn   string
 }
 
 func (r *recorder) note(format string, args ...any) error {
@@ -95,7 +97,16 @@ func (r *recorder) PaneForSession(_ context.Context, id string) (string, bool, e
 	p, ok := r.panes[id]
 	return p, ok, r.note("paneforsession %s", id)
 }
-func (r *recorder) Focus(_ context.Context, pane string) error { return r.note("focus %s", pane) }
+func (r *recorder) Focus(_ context.Context, pane string) error {
+	if err := r.note("focus %s", pane); err != nil {
+		return err
+	}
+	if r.focusFails > 0 {
+		r.focusFails--
+		return errors.New("agent_not_found")
+	}
+	return nil
+}
 
 func (r *recorder) shell(_ context.Context, dir string, args ...string) ([]byte, error) {
 	return nil, r.note("shell %s %s", dir, strings.Join(args, " "))
@@ -248,6 +259,45 @@ func TestJumpOpensTabWhenClosed(t *testing.T) {
 	want := "paneforsession ses_a|workspacefor|createtab w1 " + dir + " se-1 Fix|run w1:p9 opencode --session ses_a|focus w1:p9"
 	if strings.Join(r.log, "|") != want {
 		t.Fatalf("log = %v", r.log)
+	}
+}
+
+func fastFocus(t *testing.T, interval, timeout time.Duration) {
+	t.Helper()
+	oldInterval, oldTimeout := focusInterval, focusTimeout
+	focusInterval, focusTimeout = interval, timeout
+	t.Cleanup(func() { focusInterval, focusTimeout = oldInterval, oldTimeout })
+}
+
+func TestJumpRetriesFocusAfterReopening(t *testing.T) {
+	fastFocus(t, time.Millisecond, time.Second)
+	r := &recorder{hasWS: true, focusFails: 3}
+	tgt := Target{Repo: "/r", Project: "se", Worktree: t.TempDir(), TaskID: "se-1", Title: "Fix", SessionID: "ses_a"}
+	if err := Jump(context.Background(), r, tgt); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(strings.Join(r.log, "|"), "focus w1:p9"); n != 4 {
+		t.Fatalf("focus attempts = %d, log = %v", n, r.log)
+	}
+}
+
+func TestJumpGivesUpWhenFocusNeverSucceeds(t *testing.T) {
+	fastFocus(t, time.Millisecond, 10*time.Millisecond)
+	r := &recorder{hasWS: true, focusFails: 1 << 30}
+	tgt := Target{Repo: "/r", Project: "se", Worktree: t.TempDir(), TaskID: "se-1", Title: "Fix", SessionID: "ses_a"}
+	err := Jump(context.Background(), r, tgt)
+	if err == nil || !strings.Contains(err.Error(), "agent_not_found") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestJumpDoesNotRetryExistingPane(t *testing.T) {
+	r := &recorder{panes: map[string]string{"ses_a": "w3:p1"}, focusFails: 1 << 30}
+	if err := Jump(context.Background(), r, Target{SessionID: "ses_a"}); err == nil {
+		t.Fatal("expected the focus error")
+	}
+	if n := strings.Count(strings.Join(r.log, "|"), "focus"); n != 1 {
+		t.Fatalf("focus attempts = %d", n)
 	}
 }
 

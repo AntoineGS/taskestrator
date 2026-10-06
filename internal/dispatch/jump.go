@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/discover"
 	"github.com/AntoineGS/taskestrator/internal/herdr"
@@ -55,6 +56,13 @@ func OpenTab(ctx context.Context, h herdr.Herdr, t Target) (string, error) {
 	return pane, nil
 }
 
+// A new tab's agent takes several seconds to register, and herdr refuses to
+// focus it until then.
+var (
+	focusInterval = 500 * time.Millisecond
+	focusTimeout  = 15 * time.Second
+)
+
 // Jump focuses the pane running the task's session, opening one when none exists.
 func Jump(ctx context.Context, h herdr.Herdr, t Target) error {
 	if t.SessionID == "" {
@@ -64,6 +72,7 @@ func Jump(ctx context.Context, h herdr.Herdr, t Target) error {
 	if err != nil {
 		return err
 	}
+	opened := !ok
 	if !ok {
 		if _, err := os.Stat(t.Worktree); err != nil {
 			return fmt.Errorf("worktree %s is missing: %w", t.Worktree, err)
@@ -72,5 +81,20 @@ func Jump(ctx context.Context, h herdr.Herdr, t Target) error {
 			return err
 		}
 	}
-	return h.Focus(ctx, pane)
+	return focus(ctx, h, pane, opened)
+}
+
+func focus(ctx context.Context, h herdr.Herdr, pane string, retry bool) error {
+	deadline := time.Now().Add(focusTimeout)
+	for {
+		err := h.Focus(ctx, pane)
+		if err == nil || !retry || !time.Now().Add(focusInterval).Before(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(focusInterval):
+		}
+	}
 }
