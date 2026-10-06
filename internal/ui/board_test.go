@@ -142,7 +142,7 @@ func TestBoardSettledEventRereadsProject(t *testing.T) {
 	m, _ := settle(t, b, b.Init())
 	before := tr.listCount("/se")
 	settle(t, m, func() tea.Msg {
-		return eventMsg{ev: opencode.Event{Type: "session.idle", SessionID: "ses_1"}, ok: true}
+		return eventMsg{ev: opencode.Event{Type: "session.execution.succeeded", SessionID: "ses_1"}, ok: true}
 	})
 	if tr.listCount("/se") <= before {
 		t.Fatal("a settled event did not re-read the project's tasks")
