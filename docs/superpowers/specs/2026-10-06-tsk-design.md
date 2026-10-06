@@ -99,7 +99,8 @@ The `status` function applies these rules in order; the first match wins.
 |---|---|---|
 | 1 | Task is `closed` | done |
 | 2 | Task is `review` | review |
-| 3 | Task has no `tsk.session` | queued |
+| 3 | Task has no `tsk.session` and is `open` | queued |
+| 3a | Task has no `tsk.session` and any other status (claimed or blocked outside tsk) | untracked, shown with its Beads status; never dispatchable |
 | 4 | OpenCode has no session with that ID | lost |
 | 5 | Session has a pending form or permission | waiting on you (question or permission) |
 | 6 | Session is running | in progress |
@@ -120,7 +121,13 @@ tasks closed in the last 24 hours, `q` or Esc closes.
 
 Jumping focuses the herdr pane whose `agent_session` matches the task's
 session. If there is none, it opens a tab in the task's worktree running
-`opencode --session <id>`. On a lost task, Enter offers to dispatch again.
+`opencode --session <id>`. On a lost task, Enter explains that it can be
+dispatched again from `tsk project`, where `d` works on lost tasks as well as
+ready ones.
+
+Questions and permissions raised by a subagent arrive on a child session. The
+board follows `parentID` links to the task's session, and a task's snapshot
+counts pending forms and permissions across its whole session tree.
 
 Keeping current while open:
 
@@ -134,8 +141,9 @@ Keeping current while open:
 ## Project view and dispatch
 
 Lists the project's tasks with the same states, ready tasks first in
-`bd ready` order. Enter on a dispatched task jumps to it. `d` on a ready task
-dispatches it:
+`bd ready` order. It refreshes on the re-read interval rather than following
+the event stream. Enter on a dispatched task jumps to it. `d` on a ready or
+lost task dispatches it:
 
 1. Claim with `bd update <id> --claim`. Stop if another actor holds it.
 2. Create `.worktrees/<id>` on branch `task/<id>` from the default branch, or
@@ -207,26 +215,41 @@ command = "tsk board"
   undo sequence.
 - `opencode`: an `httptest` server replaying recorded responses and
   event-stream data, including dropped connections.
-- `ui`: `teatest` output checks for the board and project views.
+- `ui`: messages fed straight into the Bubble Tea models, checking `View()`
+  output and the commands returned. (`teatest` for Bubble Tea v2 has no tagged
+  release.)
 - End to end, behind a build tag: a throwaway Beads project, real OpenCode
   sessions and real herdr tabs. It never touches real projects.
 
 ## Assumptions to verify first
 
-These are documented or present in schemas but have not been exercised. The
-first implementation task confirms each one against the running services and
-records the results; if any fails, this spec is revised before building on it.
+Already confirmed read-only on 2026-10-06, from the live OpenAPI document
+(`GET /openapi.json`), a sample of the event stream, OpenCode's source and
+`bd`/`herdr` help output:
 
-- `POST /api/session` accepts a directory and returns a session ID that
-  `opencode --session <id>` attaches to.
-- `POST /api/session/{id}/prompt` starts work without a TUI attached.
-- The event names and payloads used for status (`session.status`,
-  `session.execution.started`, `session.idle`, `form.created`, `form.replied`,
-  `form.cancelled`, `permission.asked`, `permission.replied`) and how each
-  identifies its session.
-- `GET /api/form` and `GET /api/permission/request` identify the owning
-  session.
-- How the CLI authenticates to the background service.
-- `bd update --metadata` merge behaviour and `--claim` failure output.
-- `herdr` can create a tab with a working directory and command, and its agent
-  list reports the OpenCode session ID for a pane started that way.
+- Clients authenticate with HTTP basic auth, user `opencode`, password from
+  `~/.config/opencode/service.json`. `opencode service status` prints the URL.
+- `POST /api/session` takes `title`, `location.directory` and `metadata`.
+- `GET /api/session/{id}/form` and `/permission` list pending requests per
+  session; `GET /api/session?parentID=` lists child sessions.
+- Events are `data:` lines carrying `{id, type, location, data, durable}`;
+  most payloads carry `data.sessionID`, and `form.created` carries
+  `data.form.sessionID`.
+- `bd update --set-metadata k=v` merges keys; `bd config get status.custom
+  --json` returns `{"value": …}`; `bd ready` and `bd list` accept `-n 0`.
+- `herdr tab create` returns the new tab's `root_pane`; `herdr agent list`
+  reports each pane's `agent_session.value`.
+
+Still to exercise against the running services in the first implementation
+task, with results recorded in `docs/contract-check.md`. If any fails, this
+spec is revised before building on it.
+
+- `opencode --session <id>` attaches to a session created through the API.
+- `POST /api/session/{id}/prompt` starts work with no window attached.
+- A question raised by the agent produces `form.created` and shows in the
+  session's form list; going idle produces `session.idle` or
+  `session.execution.succeeded`.
+- `bd list --json` includes a `metadata` object; `bd update --assignee ""`
+  clears the assignee; how `--claim` fails on a task claimed by another actor.
+- `herdr pane run` starts a command in a new tab's pane, the pane then reports
+  the session in `agent list`, and `herdr agent focus <pane>` switches to it.
