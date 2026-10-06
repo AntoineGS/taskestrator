@@ -79,3 +79,16 @@ func TestDefaultPathUsesXDG(t *testing.T) {
 		t.Fatalf("DefaultPath = %q", got)
 	}
 }
+
+func TestLoadExpandsHomeInHidden(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	write(t, path, "hidden = [\"~/gits/old\", \"se\"]\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	if cfg.Hidden[0] != filepath.Join(home, "gits", "old") || cfg.Hidden[1] != "se" {
+		t.Fatalf("Hidden = %v", cfg.Hidden)
+	}
+}

@@ -56,7 +56,9 @@ func Load(path string) (Config, error) {
 			cfg.Roots = append(cfg.Roots, ExpandHome(r))
 		}
 	}
-	cfg.Hidden = fc.Hidden
+	for _, h := range fc.Hidden {
+		cfg.Hidden = append(cfg.Hidden, ExpandHome(h))
+	}
 	if fc.RereadInterval != "" {
 		d, err := time.ParseDuration(fc.RereadInterval)
 		if err != nil || d <= 0 {

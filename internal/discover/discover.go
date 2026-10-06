@@ -28,13 +28,22 @@ func Scan(roots, hidden []string) ([]Project, []string) {
 	hide := map[string]bool{}
 	for _, h := range hidden {
 		hide[h] = true
+		if strings.ContainsRune(h, filepath.Separator) {
+			hide[resolve(h)] = true
+		}
 	}
 	seen := map[string]bool{}
 	var out []Project
 	var warns []string
 	for _, root := range roots {
 		root = filepath.Clean(root)
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		resolved, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			warns = append(warns, fmt.Sprintf("scan %s: %v", root, err))
+			continue
+		}
+		root = resolved
+		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if path == root {
 					return err

@@ -107,3 +107,30 @@ func TestForDir(t *testing.T) {
 		}
 	}
 }
+
+func TestScanHiddenSymlinkedPath(t *testing.T) {
+	root := t.TempDir()
+	project(t, filepath.Join(root, "alpha"), "al")
+	project(t, filepath.Join(root, "beta"), "be")
+	link := filepath.Join(t.TempDir(), "alpha-link")
+	if err := os.Symlink(filepath.Join(root, "alpha"), link); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := Scan([]string{root}, []string{link})
+	if len(got) != 1 || got[0].Name != "be" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestScanSymlinkedRoot(t *testing.T) {
+	target := t.TempDir()
+	project(t, filepath.Join(target, "alpha"), "al")
+	link := filepath.Join(t.TempDir(), "gits")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	got, warns := Scan([]string{link}, nil)
+	if len(warns) != 0 || len(got) != 1 || got[0].Name != "al" {
+		t.Fatalf("got %+v, warns %v", got, warns)
+	}
+}
