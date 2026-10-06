@@ -56,6 +56,7 @@ type Project struct {
 	reviewOK  bool
 	ignoredOK bool
 	busy      bool
+	sent      map[string]string
 	loadErr   string
 	message   string
 }
@@ -73,6 +74,7 @@ type checksMsg struct {
 
 type dispatchedMsg struct {
 	id  string
+	was string
 	res dispatch.Result
 	err error
 }
@@ -87,7 +89,7 @@ func NewProject(ctx context.Context, cfg ProjectConfig) *Project {
 	if cfg.Reread <= 0 {
 		cfg.Reread = 10 * time.Second
 	}
-	return &Project{ctx: ctx, cfg: cfg, ready: map[string]int{}, snaps: map[string]*status.Snapshot{}}
+	return &Project{ctx: ctx, cfg: cfg, ready: map[string]int{}, sent: map[string]string{}, snaps: map[string]*status.Snapshot{}}
 }
 
 func (p *Project) Init() tea.Cmd {
@@ -143,6 +145,7 @@ func (p *Project) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		p.loadErr = ""
 		p.tasks = msg.tasks
+		p.pruneSent()
 		p.ready = map[string]int{}
 		for i, t := range msg.ready {
 			p.ready[t.ID] = i
@@ -175,6 +178,9 @@ func (p *Project) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.checks()
 	case dispatchedMsg:
 		p.busy = false
+		if msg.err == nil {
+			p.sent[msg.id] = msg.was
+		}
 		switch {
 		case msg.err != nil:
 			p.message = "dispatch failed: " + msg.err.Error()
@@ -194,6 +200,21 @@ func (p *Project) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, tea.Quit
 	}
 	return p, nil
+}
+
+// A dispatched task stays blocked until a load shows a new session or the task gone/closed, so stale loads cannot re-enable it.
+func (p *Project) pruneSent() {
+	for id, was := range p.sent {
+		keep := false
+		for _, t := range p.tasks {
+			if t.ID == id {
+				keep = t.Status != "closed" && t.Meta(tracker.MetaSession) == was
+			}
+		}
+		if !keep {
+			delete(p.sent, id)
+		}
+	}
 }
 
 func (p *Project) rebuild() {
@@ -258,7 +279,11 @@ func (p *Project) dispatch() tea.Cmd {
 	}
 	row := p.rows[p.cursor]
 	dispatchable := (row.ready && row.display.State == status.Queued) || row.display.State == status.Lost
+	_, sent := p.sent[row.task.ID]
 	switch {
+	case sent:
+		p.message = row.task.ID + " was already dispatched; waiting for it to update"
+		return nil
 	case !dispatchable:
 		p.message = row.task.ID + " is not ready to dispatch (" + row.display.String() + ")"
 		return nil
@@ -276,9 +301,10 @@ func (p *Project) dispatch() tea.Cmd {
 	p.message = "dispatching " + row.task.ID + "…"
 	ctx, run := p.ctx, p.cfg.Dispatch
 	req := dispatch.Request{Project: p.cfg.Project, Task: row.task, File: p.cfg.File}
+	was := row.task.Meta(tracker.MetaSession)
 	return func() tea.Msg {
 		res, err := run(ctx, req)
-		return dispatchedMsg{id: req.Task.ID, res: res, err: err}
+		return dispatchedMsg{id: req.Task.ID, was: was, res: res, err: err}
 	}
 }
 

@@ -165,7 +165,7 @@ func TestProjectReportsTabErrorAndDispatchError(t *testing.T) {
 		t.Fatalf("view:\n%s", view(m))
 	}
 	d.err, d.res = errors.New("claim: taken"), dispatch.Result{}
-	cursorTo(t, p, "se-r")
+	cursorTo(t, p, "se-l")
 	m, _ = press(t, m, "d")
 	if !strings.Contains(view(m), "claim: taken") {
 		t.Fatalf("view:\n%s", view(m))
@@ -179,5 +179,33 @@ func TestProjectEnterJumps(t *testing.T) {
 	_, msgs := press(t, m, "enter")
 	if len(j.targets) != 1 || j.targets[0].SessionID != "ses_w" || !quits(msgs) {
 		t.Fatalf("targets = %+v", j.targets)
+	}
+}
+
+func TestProjectDoesNotDispatchTwiceBeforeReload(t *testing.T) {
+	p, _, d, _ := newTestProject(t, true, true)
+	m, _ := settle(t, p, p.Init())
+	cursorTo(t, p, "se-r")
+	m, _ = press(t, m, "d")
+	cursorTo(t, p, "se-r")
+	m, _ = press(t, m, "d")
+	if len(d.reqs) != 1 {
+		t.Fatalf("reqs = %+v", d.reqs)
+	}
+	if !strings.Contains(view(m), "already dispatched") {
+		t.Fatalf("view:\n%s", view(m))
+	}
+}
+
+func TestProjectRetriesAfterFailedDispatch(t *testing.T) {
+	p, _, d, _ := newTestProject(t, true, true)
+	d.err = errors.New("claim: taken")
+	m, _ := settle(t, p, p.Init())
+	cursorTo(t, p, "se-r")
+	m, _ = press(t, m, "d")
+	cursorTo(t, p, "se-r")
+	press(t, m, "d")
+	if len(d.reqs) != 2 {
+		t.Fatalf("reqs = %+v", d.reqs)
 	}
 }
