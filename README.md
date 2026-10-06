@@ -14,6 +14,14 @@ Dispatched agents use OpenCode's default model, so set a reliable default.
 
 ## Install
 
+From a checkout:
+
+```sh
+make install   # go install ./cmd/tsk, into $GOBIN (default ~/go/bin)
+```
+
+Or without cloning:
+
 ```sh
 go install github.com/AntoineGS/taskestrator/cmd/tsk@latest
 ```

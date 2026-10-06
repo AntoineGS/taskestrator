@@ -1,7 +1,10 @@
-.PHONY: build test lint e2e
+.PHONY: build install test lint e2e
 
 build:
 	go build -o bin/tsk ./cmd/tsk
+
+install:
+	go install ./cmd/tsk
 
 test:
 	go test ./...
