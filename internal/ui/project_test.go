@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/AntoineGS/taskestrator/internal/config"
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
 	"github.com/AntoineGS/taskestrator/internal/gitwt"
@@ -67,7 +69,7 @@ func cursorTo(t *testing.T, p *Project, id string) {
 	t.Helper()
 	for i, r := range p.rows {
 		if r.task.ID == id {
-			p.cursor = i
+			p.cursor, p.selected = i, id
 			return
 		}
 	}
@@ -207,5 +209,62 @@ func TestProjectRetriesAfterFailedDispatch(t *testing.T) {
 	press(t, m, "d")
 	if len(d.reqs) != 2 {
 		t.Fatalf("reqs = %+v", d.reqs)
+	}
+}
+
+func TestProjectCursorFollowsTaskAcrossReload(t *testing.T) {
+	p, tr, d, _ := newTestProject(t, true, true)
+	m, _ := settle(t, p, p.Init())
+	for i := 0; p.rows[p.cursor].task.ID != "se-l"; i++ {
+		if i > len(p.rows) {
+			t.Fatal("se-l not found")
+		}
+		m, _ = press(t, m, "j")
+	}
+	newer := tracker.Task{ID: "se-a", Title: "Newly ready", Status: "open", Priority: 0}
+	tr.tasks["/se"] = append([]tracker.Task{newer}, tr.tasks["/se"]...)
+	tr.ready["/se"] = append([]tracker.Task{newer}, tr.ready["/se"]...)
+	m, _ = settle(t, m, func() tea.Msg { return tickMsg{} })
+	if got := p.rows[p.cursor].task.ID; got != "se-l" {
+		t.Fatalf("after reload the cursor is on %s, want se-l:\n%s", got, view(m))
+	}
+	press(t, m, "d")
+	if len(d.reqs) != 1 || d.reqs[0].Task.ID != "se-l" {
+		t.Fatalf("reqs = %+v", d.reqs)
+	}
+}
+
+func TestProjectQuitIsBlockedWhileDispatching(t *testing.T) {
+	p, _, _, _ := newTestProject(t, true, true)
+	m, _ := settle(t, p, p.Init())
+	cursorTo(t, p, "se-r")
+	release := make(chan struct{})
+	p.cfg.Dispatch = func(context.Context, dispatch.Request) (dispatch.Result, error) {
+		<-release
+		return dispatch.Result{}, nil
+	}
+	m, _ = m.Update(key("d"))
+	for _, k := range []string{"q", "esc", "ctrl+c"} {
+		_, cmd := m.Update(key(k))
+		if cmd != nil && quits(collect(cmd)) {
+			t.Errorf("%s quit during a dispatch", k)
+		}
+	}
+	if !strings.Contains(view(m), "dispatch in progress") {
+		t.Fatalf("view:\n%s", view(m))
+	}
+	close(release)
+}
+
+func TestProjectUnreachableBannerWaitsForSnapshots(t *testing.T) {
+	p, _, _, _ := newTestProject(t, true, true)
+	if strings.Contains(view(p), "unreachable") {
+		t.Fatalf("banner shown before any snapshot result:\n%s", view(p))
+	}
+	p.cfg.Live.(*fakeLive).set(func(f *fakeLive) { f.down = true })
+	m, _ := settle(t, p, p.Init())
+	v := view(m)
+	if !strings.Contains(v, "unreachable") || !strings.Contains(v, "connection refused") {
+		t.Fatalf("banner missing:\n%s", v)
 	}
 }

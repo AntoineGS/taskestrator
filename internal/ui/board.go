@@ -44,6 +44,7 @@ type Board struct {
 
 	rows     []board.Row
 	cursor   int
+	selected rowKey
 	showAll  bool
 	filter   string
 	editing  bool
@@ -54,6 +55,10 @@ type Board struct {
 	pending  map[string]bool
 	backoff  time.Duration
 }
+
+type rowKey struct{ repo, id string }
+
+func keyOf(r board.Row) rowKey { return rowKey{r.Project.Repo, r.Task.ID} }
 
 type tasksMsg struct {
 	project discover.Project
@@ -194,7 +199,11 @@ func (b *Board) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return b, b.scheduleReconnect()
 		}
 		b.backoff = 0
-		return b, tea.Batch(waitEvent(msg.ch), b.loadSnaps(b.store.Sessions()))
+		cmds := []tea.Cmd{waitEvent(msg.ch)}
+		for _, p := range b.projects {
+			cmds = append(cmds, b.loadTasks(p))
+		}
+		return b, tea.Batch(cmds...)
 	case eventMsg:
 		if !msg.ok {
 			b.liveErr = "OpenCode event stream disconnected; reconnecting"
@@ -270,13 +279,9 @@ func (b *Board) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		return b, tea.Quit
 	case "j", "down":
-		if b.cursor < len(b.rows)-1 {
-			b.cursor++
-		}
+		b.move(1)
 	case "k", "up":
-		if b.cursor > 0 {
-			b.cursor--
-		}
+		b.move(-1)
 	case "a":
 		b.showAll = !b.showAll
 		b.refreshRows()
@@ -323,8 +328,22 @@ func (b *Board) refreshRows() {
 		rows = kept
 	}
 	b.rows = rows
-	if b.cursor >= len(rows) {
-		b.cursor = max(0, len(rows)-1)
+	found := false
+	for i, r := range rows {
+		if b.selected != (rowKey{}) && keyOf(r) == b.selected {
+			b.cursor, found = i, true
+		}
+	}
+	if !found {
+		b.cursor = max(0, min(len(rows)-1, b.cursor))
+		b.selected = rowKey{}
+	}
+}
+
+func (b *Board) move(delta int) {
+	b.cursor = max(0, min(len(b.rows)-1, b.cursor+delta))
+	if len(b.rows) > 0 {
+		b.selected = keyOf(b.rows[b.cursor])
 	}
 }
 

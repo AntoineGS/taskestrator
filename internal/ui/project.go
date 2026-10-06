@@ -49,8 +49,11 @@ type Project struct {
 	ready     map[string]int
 	snaps     map[string]*status.Snapshot
 	reachable bool
+	snapsSeen bool
+	snapErr   error
 	rows      []projectRow
 	cursor    int
+	selected  string
 
 	checked   bool
 	reviewOK  bool
@@ -154,7 +157,7 @@ func (p *Project) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ctx, live, ids := p.ctx, p.cfg.Live, p.sessions()
 		return p, func() tea.Msg { return loadSnapshots(ctx, live, ids) }
 	case snapsMsg:
-		p.reachable = msg.reachable
+		p.reachable, p.snapsSeen, p.snapErr = msg.reachable, true, msg.err
 		if msg.reachable {
 			for id, s := range msg.snaps {
 				p.snaps[id] = s
@@ -245,23 +248,37 @@ func (p *Project) rebuild() {
 		return a.task.ID < b.task.ID
 	})
 	p.rows = rows
-	if p.cursor >= len(rows) {
-		p.cursor = max(0, len(rows)-1)
+	found := false
+	for i, r := range rows {
+		if p.selected != "" && r.task.ID == p.selected {
+			p.cursor, found = i, true
+		}
+	}
+	if !found {
+		p.cursor = max(0, min(len(rows)-1, p.cursor))
+		p.selected = ""
+	}
+}
+
+func (p *Project) move(delta int) {
+	p.cursor = max(0, min(len(p.rows)-1, p.cursor+delta))
+	if len(p.rows) > 0 {
+		p.selected = p.rows[p.cursor].task.ID
 	}
 }
 
 func (p *Project) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
+		if p.busy {
+			p.message = "dispatch in progress; wait for it to finish"
+			return p, nil
+		}
 		return p, tea.Quit
 	case "j", "down":
-		if p.cursor < len(p.rows)-1 {
-			p.cursor++
-		}
+		p.move(1)
 	case "k", "up":
-		if p.cursor > 0 {
-			p.cursor--
-		}
+		p.move(-1)
 	case "R":
 		ctx, tr, repo := p.ctx, p.cfg.Tracker, p.cfg.Project.Repo
 		return p, func() tea.Msg { return reviewAddedMsg{err: tr.AddReviewStatus(ctx, repo)} }
@@ -338,8 +355,12 @@ func (p *Project) View() tea.View {
 	if p.loadErr != "" {
 		fmt.Fprintf(&s, "! %s\n", p.loadErr)
 	}
-	if p.cfg.Live != nil && !p.reachable {
-		s.WriteString("! OpenCode service unreachable; live states are unknown\n")
+	if p.cfg.Live != nil && p.snapsSeen && !p.reachable {
+		s.WriteString("! OpenCode service unreachable; live states are unknown")
+		if p.snapErr != nil {
+			fmt.Fprintf(&s, " (%v)", p.snapErr)
+		}
+		s.WriteString("\n")
 	}
 	if p.checked && !p.reviewOK {
 		s.WriteString("! this project has no review status; press R to add it\n")

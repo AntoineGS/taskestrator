@@ -162,7 +162,7 @@ func TestBoardIgnoresIrrelevantEvents(t *testing.T) {
 }
 
 func TestBoardReconnectsAndReloads(t *testing.T) {
-	b, _, lv, _ := newTestBoard(t)
+	b, tr, lv, _ := newTestBoard(t)
 	var delays []time.Duration
 	b.after = func(d time.Duration, msg tea.Msg) tea.Cmd {
 		if _, ok := msg.(reconnectMsg); ok {
@@ -173,7 +173,13 @@ func TestBoardReconnectsAndReloads(t *testing.T) {
 	}
 	m, _ := settle(t, b, b.Init())
 	before := lv.calls("ses_1")
+	listsBefore := map[string]int{"/se": tr.listCount("/se"), "/md": tr.listCount("/md")}
 	m, _ = settle(t, m, func() tea.Msg { return eventMsg{ok: false} })
+	for repo, n := range listsBefore {
+		if tr.listCount(repo) <= n {
+			t.Errorf("reconnecting did not reload %s from Beads", repo)
+		}
+	}
 	if len(delays) != 1 || delays[0] != time.Second {
 		t.Fatalf("reconnect delays = %v", delays)
 	}
@@ -185,6 +191,25 @@ func TestBoardReconnectsAndReloads(t *testing.T) {
 	}
 	if strings.Contains(view(m), "disconnected") {
 		t.Fatalf("the banner stayed after reconnecting:\n%s", view(m))
+	}
+}
+
+func TestBoardCursorFollowsTaskAcrossReload(t *testing.T) {
+	b, tr, lv, j := newTestBoard(t)
+	m, _ := settle(t, b, b.Init())
+	m, _ = press(t, m, "j")
+	if got := b.rows[b.cursor].Task.ID; got != "se-1" {
+		t.Fatalf("selected %s, want se-1", got)
+	}
+	tr.tasks["/se"][2] = dispatched("se-3", "Now waiting", "in_progress", "ses_3")
+	lv.set(func(f *fakeLive) { f.snaps["ses_3"] = status.Snapshot{Exists: true, Forms: 1} })
+	m, _ = settle(t, m, func() tea.Msg { return tickMsg{} })
+	if got := b.rows[b.cursor].Task.ID; got != "se-1" {
+		t.Fatalf("after reload the cursor is on %s, want se-1:\n%s", got, view(m))
+	}
+	press(t, m, "enter")
+	if len(j.targets) != 1 || j.targets[0].TaskID != "se-1" {
+		t.Fatalf("targets = %+v", j.targets)
 	}
 }
 
