@@ -37,25 +37,44 @@ type pane struct {
 	} `json:"agent_session"`
 }
 
-func (h CLI) parseErrorEnvelope(data []byte) string {
+func parseErrorEnvelope(data []byte) string {
 	var env struct {
-		Error json.RawMessage `json:"error"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return ""
 	}
-	if len(env.Error) > 0 && string(env.Error) != "null" {
-		return string(env.Error)
+	if env.Error.Message != "" {
+		return env.Error.Message
+	}
+	var rawEnv struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &rawEnv); err != nil {
+		return ""
+	}
+	if len(rawEnv.Error) > 0 && string(rawEnv.Error) != "null" {
+		return string(rawEnv.Error)
 	}
 	return ""
 }
 
-func (h CLI) call(ctx context.Context, out any, args ...string) error {
+func (h CLI) exec(ctx context.Context, args ...string) ([]byte, error) {
 	data, err := h.Exec(ctx, "", args...)
 	if err != nil {
-		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
-			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
+		if errMsg := parseErrorEnvelope(data); errMsg != "" {
+			return data, fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
 		}
+		return data, err
+	}
+	return data, nil
+}
+
+func (h CLI) call(ctx context.Context, out any, args ...string) error {
+	data, err := h.exec(ctx, args...)
+	if err != nil {
 		return err
 	}
 	var env struct {
@@ -131,14 +150,8 @@ func (h CLI) CreateTab(ctx context.Context, workspaceID, cwd, label string) (str
 // Arguments containing spaces must be pre-quoted by the caller.
 func (h CLI) Run(ctx context.Context, paneID string, command ...string) error {
 	args := []string{"pane", "run", paneID, strings.Join(command, " ")}
-	data, err := h.Exec(ctx, "", args...)
-	if err != nil {
-		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
-			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
-		}
-		return err
-	}
-	return nil
+	_, err := h.exec(ctx, args...)
+	return err
 }
 
 func (h CLI) PaneForSession(ctx context.Context, sessionID string) (string, bool, error) {
@@ -158,12 +171,6 @@ func (h CLI) PaneForSession(ctx context.Context, sessionID string) (string, bool
 
 func (h CLI) Focus(ctx context.Context, paneID string) error {
 	args := []string{"agent", "focus", paneID}
-	data, err := h.Exec(ctx, "", args...)
-	if err != nil {
-		if errMsg := h.parseErrorEnvelope(data); errMsg != "" {
-			return fmt.Errorf("herdr %s: %s: %w", strings.Join(args, " "), errMsg, err)
-		}
-		return err
-	}
-	return nil
+	_, err := h.exec(ctx, args...)
+	return err
 }

@@ -2,6 +2,7 @@ package herdr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -92,13 +93,17 @@ func TestErrorEnvelope(t *testing.T) {
 }
 
 func TestErrorEnvelopeOnCommandFailure(t *testing.T) {
+	origErr := fmt.Errorf("exit status 1")
 	failRun := func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		k := strings.Join(args, " ")
 		if k == "pane list" {
-			return []byte(`{"id":"x","error":{"code":"server_not_running","message":"server not running"}}`), fmt.Errorf("exit status 1")
+			return []byte(`{"id":"x","error":{"code":"server_not_running","message":"server not running"}}`), origErr
 		}
 		if k == "pane run w1:p2 opencode" {
-			return []byte(`{"id":"y","error":{"code":"pane_not_found","message":"pane not found"}}`), fmt.Errorf("exit status 1")
+			return []byte(`{"id":"y","error":{"code":"pane_not_found","message":"pane not found"}}`), origErr
+		}
+		if k == "agent focus w1:p2" {
+			return []byte(`{"id":"z","error":{"code":"focus_failed","message":"focus failed"}}`), origErr
 		}
 		return nil, nil
 	}
@@ -109,10 +114,25 @@ func TestErrorEnvelopeOnCommandFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "server not running") {
 		t.Fatalf("WorkspaceFor err = %v, want to contain 'server not running'", err)
 	}
+	if !errors.Is(err, origErr) {
+		t.Fatalf("WorkspaceFor err does not wrap original error")
+	}
 
 	// Test Run method
 	err = h.Run(context.Background(), "w1:p2", "opencode")
 	if err == nil || !strings.Contains(err.Error(), "pane not found") {
 		t.Fatalf("Run err = %v, want to contain 'pane not found'", err)
+	}
+	if !errors.Is(err, origErr) {
+		t.Fatalf("Run err does not wrap original error")
+	}
+
+	// Test Focus method
+	err = h.Focus(context.Background(), "w1:p2")
+	if err == nil || !strings.Contains(err.Error(), "focus failed") {
+		t.Fatalf("Focus err = %v, want to contain 'focus failed'", err)
+	}
+	if !errors.Is(err, origErr) {
+		t.Fatalf("Focus err does not wrap original error")
 	}
 }
