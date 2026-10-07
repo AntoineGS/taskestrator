@@ -286,7 +286,9 @@ type FieldProvider interface {
   value does not match any comparison on that field.
 - The overdue/stale badge and the capabilities detail section move onto these
   registries, so that built-in code exercises the seams. The overdue/stale
-  badge then also appears on board cards, tree rows and epics rows.
+  badge then also appears on board cards, tree rows and epics rows. The gate
+  badge stays in the list renderer, because it depends on a value computed from
+  the bead's blockers (`IssueItem.GateAwaitType`), not on the bead itself.
 
 ## Selected bead
 
