@@ -82,7 +82,7 @@ on a plugin.
 ### Bead references
 
 ```json
-{ "db": "tsk", "id": "tsk-a1b", "repo": "/home/u/gits/taskestrator" }
+{ "db": "proj", "id": "proj-a1b", "repo": "/home/u/gits/proj" }
 ```
 
 `db` is the Beads database name: `Issue.SourceRepo` in global mode, the
@@ -99,7 +99,7 @@ Params:
 {
   "protocolVersion": 1,
   "bt": { "version": "0.4.0" },
-  "scope": { "mode": "global", "databases": ["tsk", "se"] },
+  "scope": { "mode": "global", "databases": ["proj", "other"] },
   "popup": false,
   "options": { "roots": ["~/gits"] }
 }
@@ -155,7 +155,7 @@ means no metadata is sent.
 {
   "revision": 12,
   "beads": [{
-    "db": "tsk", "id": "tsk-a1b", "repo": "/home/u/gits/taskestrator",
+    "db": "proj", "id": "proj-a1b", "repo": "/home/u/gits/proj",
     "status": "in_progress", "title": "…", "type": "task", "priority": 2,
     "assignee": "antoine", "metadata": { "example.session": "ses_…" }
   }]
@@ -172,7 +172,7 @@ by one each time. Descriptions and comments are never sent.
 {
   "replace": false,
   "beads": [{
-    "db": "tsk", "id": "tsk-a1b",
+    "db": "proj", "id": "proj-a1b",
     "fields": { "state": { "value": "waiting", "since": "2026-10-07T14:03:00Z" } },
     "sections": { "agent": "**Session** `ses_…`\n\nWaiting on a question: …" },
     "actions": ["jump"]

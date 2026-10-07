@@ -20,10 +20,10 @@ No plugin code is included.
 
 ## Testing
 
-Run with `HOME` and `XDG_CONFIG_HOME` pointed at an empty directory, so a personal theme config does not affect the theme tests.
+`pkg/ui` was run with `HOME` and `XDG_CONFIG_HOME` pointed at an empty directory, because a personal theme config on my machine breaks three theme tests. The other packages were run with the real `HOME`. Under that setup the only failure is `TestMemoriesLoadCmd_DogfoodLiveProject`, which needs the maintainer's private Beads database. If you rerun the whole suite with an empty `HOME` under `/tmp`, `cmd/bt` `TestIsEphemeralAnchorPath/normal_project_path` also fails, because `/tmp` counts as an ephemeral path.
 
 - `go build ./...` and `go vet ./...`: clean.
 - `gofmt -l` on the Go files changed by this branch: prints nothing.
-- `go test ./...`: passes except `TestMemoriesLoadCmd_DogfoodLiveProject`, which needs a `bt` Beads database that is not present on my machine.
+- `go test ./...` (setup above): all packages pass except `TestMemoriesLoadCmd_DogfoodLiveProject`.
 - `go test -race ./pkg/ui/slots/ ./pkg/bql/ ./pkg/ui/`: `pkg/ui/slots` and `pkg/bql` pass; `pkg/ui` fails only on the test above.
 - `go test -covermode=atomic ./pkg/ui/slots/ ./pkg/bql/`: `pkg/ui/slots` 100.0%, `pkg/bql` 77.4%.
