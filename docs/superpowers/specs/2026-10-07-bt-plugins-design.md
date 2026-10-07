@@ -132,7 +132,8 @@ on a plugin.
 ```
 
 `db` is the Beads database name: `Issue.SourceRepo` in global mode, the
-project's database from `.beads/metadata.json` in project mode. `repo` is the
+project's Dolt database (the one in the data source's DSN) in project mode,
+because the local reader copies the row's `source_repo` column instead. `repo` is the
 checkout path when `bdroute` resolves one, otherwise `null`. Plugins key all
 state by `(db, id)`.
 
@@ -289,7 +290,8 @@ type Tone int // Accent, OK, Warn, Error, Muted
 type Badge struct {
     Text  string
     Tone  Tone
-    Since time.Time // zero: no age shown
+    Since time.Time       // zero: no age shown
+    Style *lipgloss.Style // built-in providers only; overrides Tone
 }
 
 type BadgeProvider interface {
@@ -301,8 +303,13 @@ type Section struct {
     Markdown string
 }
 
+// Context carries view state a provider may depend on.
+type Context struct {
+    WorkspaceMode bool
+}
+
 type SectionProvider interface {
-    Sections(issue *model.Issue) []Section
+    Sections(issue *model.Issue, ctx Context) []Section
 }
 
 type FieldProvider interface {
@@ -316,14 +323,18 @@ type FieldProvider interface {
   delegate, board card, tree node, epics rows). They sit just before the ID,
   share a capped width budget, and are dropped before the title is truncated
   on narrow terminals.
-- Sections render after bt's own detail sections, in provider registration
-  order.
+- Sections render directly after the property block (where Capabilities sits
+  today), in provider registration order, so they are visible without
+  scrolling past comments and history.
 - BQL validation in the UI uses `ValidateWithFields` with the built-in fields
   plus every registered provider field; `MemoryExecutor` consults a
   `FieldResolver` in `ExecuteOpts` for fields it does not know. A bead without a
   value does not match any comparison on that field.
-- The gate badge and the capabilities detail section move onto these
-  registries, so that built-in code exercises the seams.
+- The overdue/stale badge and the capabilities detail section move onto these
+  registries, so that built-in code exercises the seams. The overdue/stale
+  badge then also appears on board cards, tree rows and epics rows. (The gate
+  badge stays where it is: it depends on `IssueItem.GateAwaitType`, which is
+  computed from the bead's blockers, not from the bead itself.)
 
 ### Selected bead
 
@@ -366,14 +377,14 @@ in `initialize`.
 
 0. An issue on `seanmartinsmith/beadstui` with a trimmed copy of this part,
    asking for agreement on the approach and the menu key.
-1. **Slots.** `selectedIssue()`, `pkg/ui/slots`, the badge helper in all four
-   renderers, the detail section registry, dynamic BQL fields; move the gate
-   badge and capabilities section. No plugin code.
+1. **Slots.** `pkg/ui/slots`, the badge helper in all four
+   renderers, the detail section registry, dynamic BQL fields; move the
+   overdue/stale badge and capabilities section. No plugin code.
 2. **Board lanes.** Variable lane count and mode-keyed `BoardState` cache.
 3. **Plugin host.** `pkg/plugin`, config, `initialize`, `beads.sync`,
    `state.set`/`state.clear`, badges, sections and BQL fields from plugins,
    `bt plugins`, the `testdata` test plugin, `docs/plugins.md`.
-4. **Plugin actions.** `action.invoke`, key binding and conflicts, the action
+4. **Plugin actions.** `selectedIssue()`, `action.invoke`, key binding and conflicts, the action
    menu, `ui.confirm`/`ui.select`/`ui.toast`, `--popup`.
 5. **Plugin swimlanes.** One mode per plugin field, on top of PR 2.
 
@@ -503,15 +514,22 @@ tsk:
 - `make e2e`: real `bd`, OpenCode service and herdr, with the fake host in place
   of bt.
 
-## Assumptions to verify first
+## Assumptions
 
-- bt's project mode knows the project's database name without a global reader
-  (from `.beads/metadata.json`), so `db` can always be filled.
-- bt's snapshot data hash changes when only bead metadata changes, so tsk sees
-  `tsk.session` writes through `beads.sync`.
-- The `review` custom status is returned by bt's Dolt reader and passes bt's
-  status handling without being coerced to another status.
-- `D` and `J` are free in the list, board, tree and epics views; if not, tsk
-  picks other defaults.
-- herdr popups pass the terminal size and keys through to bt as they did for
-  `tsk board`.
+Checked on 2026-10-07 against beadstui `071a0794` and bd 1.3.1:
+
+- Project mode: `Issue.SourceRepo` is not the database name (the local reader
+  copies the `source_repo` column), but the database name is in the data
+  source's DSN, so the host can fill `db` from it.
+- `bd update --set-metadata` bumps `updated_at` (observed 18:07:01 to
+  18:07:03 on a throwaway project). bt's data hash includes `UpdatedAt` but not
+  `Metadata`, and its poller reloads on a newer modification time, so metadata
+  writes do reach `beads.sync`.
+- `review` is a valid status in `pkg/model` and in BQL. The status board has no
+  Review lane; review beads appear in Open. Unchanged by this spec.
+- `D` and `J` are unbound in the list, board, tree and epics keymaps. `J` is
+  bound in History and `D` in the AGENTS.md prompt modal, neither of which
+  dispatches plugin keys.
+
+Still to check by hand: herdr popups pass the terminal size and keys through to
+bt as they did for `tsk board`.
