@@ -1,4 +1,4 @@
-// Package config loads tsk's user configuration and per-repository files.
+// Package config loads tsk's per-repository files.
 package config
 
 import (
@@ -8,66 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 )
-
-// Config is the user configuration from ~/.config/tsk/config.toml.
-type Config struct {
-	Roots          []string
-	Hidden         []string
-	RereadInterval time.Duration
-}
-
-type fileConfig struct {
-	Roots          []string `toml:"roots"`
-	Hidden         []string `toml:"hidden"`
-	RereadInterval string   `toml:"reread_interval"`
-}
-
-// Default returns the configuration used when no file exists.
-func Default() Config {
-	return Config{Roots: []string{ExpandHome("~/gits")}, RereadInterval: 10 * time.Second}
-}
-
-// DefaultPath returns the user configuration file path.
-func DefaultPath() string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "tsk", "config.toml")
-	}
-	return ExpandHome("~/.config/tsk/config.toml")
-}
-
-// Load reads the configuration at path, falling back to defaults when it does not exist.
-func Load(path string) (Config, error) {
-	cfg := Default()
-	var fc fileConfig
-	_, err := toml.DecodeFile(path, &fc)
-	if errors.Is(err, fs.ErrNotExist) {
-		return cfg, nil
-	}
-	if err != nil {
-		return Config{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	if len(fc.Roots) > 0 {
-		cfg.Roots = nil
-		for _, r := range fc.Roots {
-			cfg.Roots = append(cfg.Roots, ExpandHome(r))
-		}
-	}
-	for _, h := range fc.Hidden {
-		cfg.Hidden = append(cfg.Hidden, ExpandHome(h))
-	}
-	if fc.RereadInterval != "" {
-		d, err := time.ParseDuration(fc.RereadInterval)
-		if err != nil || d <= 0 {
-			return Config{}, fmt.Errorf("%s: reread_interval %q is not a positive duration", path, fc.RereadInterval)
-		}
-		cfg.RereadInterval = d
-	}
-	return cfg, nil
-}
 
 // ProjectFile is a repository's optional .tsk.toml.
 type ProjectFile struct {

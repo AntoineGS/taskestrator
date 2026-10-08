@@ -51,3 +51,5 @@ Implementers must handle:
 - `GET /api/session/active` returns a map of session ID to `{type}`, not an array.
 - `bd update --assignee ""` leaves `assignee: null`.
 - Sessions created without `model` use OpenCode's default model, which failed in this run with a malformed tool call. tsk inherits whatever default OpenCode has, so it should surface `session.execution.failed`.
+
+2026-10-07: tsk's own TUI (`tsk board`, `tsk project`) was removed in favour of the bt plugin (`tsk plugin`).

@@ -13,8 +13,10 @@
   Observed behaviour of `bd`, the OpenCode service and herdr is recorded in
   `docs/contract-check.md`.
 - Build and test with `make build`, `make test`, `make lint`; `make install`
-  puts `tsk` in `$GOBIN`. `make e2e` dispatches a throwaway task against the
-  real `bd`, OpenCode service and herdr, and sends one prompt.
+  puts `tsk` in `$GOBIN`. tsk has no TUI: `tsk plugin` is a headless bt plugin
+  (JSON-RPC over stdio, `internal/btplugin`), so never print to stdout except
+  protocol messages. `make e2e` dispatches a throwaway task against the real
+  `bd`, OpenCode service and herdr, and sends one prompt.
 - Never log or store the OpenCode service password
   (`~/.config/opencode/service.json`).
 
