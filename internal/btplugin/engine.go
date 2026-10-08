@@ -296,6 +296,13 @@ func (e *Engine) SetSnapshots(snaps map[string]*status.Snapshot, reachable bool,
 	return e.diff(env)
 }
 
+// Diff returns the pushes needed after an Env change.
+func (e *Engine) Diff(env Env) (set []BeadState, clear []BeadKey) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.diff(env)
+}
+
 // All returns the full current state for a replace push and records it as
 // pushed.
 func (e *Engine) All(env Env) []BeadState {

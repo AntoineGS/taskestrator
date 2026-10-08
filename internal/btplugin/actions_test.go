@@ -23,6 +23,7 @@ type actionsHarness struct {
 
 func newActions(t *testing.T, repo string, beads ...Bead) *actionsHarness {
 	t.Helper()
+	captureLog(t)
 	r := &recorder{ready: []string{"a"}, panes: map[string]string{}}
 	eng, _ := newEng()
 	eng.Sync(beads, Env{HerdrUp: true, RepoFor: func(Bead) string { return repo }})
@@ -355,8 +356,8 @@ func TestDispatchSentRaceDuringChecks(t *testing.T) {
 }
 
 func TestDispatchFailureLogged(t *testing.T) {
-	logs := captureLog(t)
 	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	logs := captureLog(t)
 	h.r.failOn = "createsession"
 	var late []Toast
 	h.a.Late = func(t Toast) { late = append(late, t) }
@@ -371,7 +372,6 @@ func TestDispatchFailureLogged(t *testing.T) {
 }
 
 func TestLateDispatchToasts(t *testing.T) {
-	captureLog(t)
 	for _, tt := range []struct {
 		failOn, msg, tone string
 	}{

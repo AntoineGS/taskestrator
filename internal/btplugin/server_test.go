@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,7 +110,8 @@ func newRig(t *testing.T) *serverRig {
 	t.Helper()
 	r := &serverRig{out: &syncBuf{}, rec: &recorder{}, probe: &atomic.Int32{}, scans: &atomic.Int32{}, loop: make(chan struct{}, 4)}
 	r.srv = &Server{
-		Engine: NewEngine(time.Now),
+		toastGap: time.Nanosecond,
+		Engine:   NewEngine(time.Now),
 		Loop: &Loop{Connect: func(ctx context.Context) (Live, error) {
 			r.loop <- struct{}{}
 			<-ctx.Done()
@@ -259,9 +262,230 @@ func TestReviewStatusToastOncePerDB(t *testing.T) {
 	eventually(t, func() bool { return len(r.out.toasts()) >= 1 })
 	time.Sleep(50 * time.Millisecond)
 	toasts := r.out.toasts()
-	want := `a has no "review" status; run in /repos/a: bd config set status.custom "review:wip"`
+	want := `1 project lacks the "review" status (a); run in each: bd config set status.custom "review:wip"`
 	if len(toasts) != 1 || toasts[0].Message != want || toasts[0].Tone != "warn" {
 		t.Fatalf("toasts = %+v", toasts)
+	}
+}
+
+// countingTracker records how many HasReviewStatus calls run at once.
+type countingTracker struct {
+	*recorder
+	mu        sync.Mutex
+	cur, peak int
+}
+
+func (c *countingTracker) HasReviewStatus(context.Context, string) (bool, error) {
+	c.mu.Lock()
+	c.cur++
+	c.peak = max(c.peak, c.cur)
+	c.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	c.mu.Lock()
+	c.cur--
+	c.mu.Unlock()
+	return false, nil
+}
+
+func TestReviewStatusOneCombinedToastAndBoundedChecks(t *testing.T) {
+	r := newRig(t)
+	ct := &countingTracker{recorder: r.rec}
+	r.srv.Tracker = ct
+	var beads []Bead
+	for i := range 7 {
+		db := "d" + string(rune('0'+i))
+		beads = append(beads, queued(db, db+"-1", ptr("/repos/"+db)))
+	}
+	if _, err := r.srv.Handle(context.Background(), "beads.sync", syncParams(t, beads...)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return len(r.out.toasts()) >= 1 })
+	time.Sleep(50 * time.Millisecond)
+	toasts := r.out.toasts()
+	want := `7 projects lack the "review" status (d0, d1, d2, d3, d4 and 2 more); run in each: bd config set status.custom "review:wip"`
+	if len(toasts) != 1 || toasts[0].Message != want || toasts[0].Tone != "warn" {
+		t.Fatalf("toasts = %+v", toasts)
+	}
+	ct.mu.Lock()
+	peak := ct.peak
+	ct.mu.Unlock()
+	if peak > 4 {
+		t.Fatalf("%d review checks ran at once, want at most 4", peak)
+	}
+}
+
+func TestReviewToastWaitsAfterUnreachableToast(t *testing.T) {
+	r := newRig(t)
+	r.srv.toastGap = 200 * time.Millisecond
+	r.rec.noReview = true
+	r.srv.onUpdate(nil, false, true)
+	if _, err := r.srv.Handle(context.Background(), "beads.sync", syncParams(t, queued("a", "a-1", ptr("/repos/a")))); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if n := len(r.out.toasts()); n != 1 {
+		t.Fatalf("review toast not delayed: %+v", r.out.toasts())
+	}
+	eventually(t, func() bool { return len(r.out.toasts()) == 2 })
+	toasts := r.out.toasts()
+	if toasts[0].Message != unreachableMessage || !strings.Contains(toasts[1].Message, `lacks the "review" status`) {
+		t.Fatalf("toasts = %+v", toasts)
+	}
+}
+
+func TestUnreachableToastRetriedWhenTooSoon(t *testing.T) {
+	r := newRig(t)
+	r.srv.toastGap = 100 * time.Millisecond
+	r.rec.noReview = true
+	if _, err := r.srv.Handle(context.Background(), "beads.sync", syncParams(t, queued("a", "a-1", ptr("/repos/a")))); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return len(r.out.toasts()) == 1 })
+	r.srv.onUpdate(nil, false, true) // bt would drop it: not sent, not latched
+	if n := len(r.out.toasts()); n != 1 {
+		t.Fatalf("toasts = %+v", r.out.toasts())
+	}
+	time.Sleep(120 * time.Millisecond)
+	r.srv.onUpdate(nil, false, true)
+	toasts := r.out.toasts()
+	if len(toasts) != 2 || toasts[1].Message != unreachableMessage {
+		t.Fatalf("toasts = %+v", toasts)
+	}
+}
+
+func TestHerdrProbeTickerPushesChange(t *testing.T) {
+	r := newRig(t)
+	var up atomic.Bool
+	up.Store(true)
+	r.srv.HerdrRunning = func() bool { return up.Load() }
+	r.srv.herdrEvery = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := r.srv.Handle(ctx, "initialize", json.RawMessage(`{"protocolVersion":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.srv.Handle(ctx, "beads.sync", syncParams(t, queued("a", "a-1", ptr("/repos/a")))); err != nil {
+		t.Fatal(err)
+	}
+	up.Store(false)
+	eventually(t, func() bool {
+		msgs := r.out.sent()
+		if len(msgs) < 2 || msgs[len(msgs)-1].Method != "state.set" {
+			return false
+		}
+		last := msgs[len(msgs)-1]
+		var set StateSetParams
+		_ = json.Unmarshal(last.Params, &set)
+		return len(set.Beads) == 1 && len(set.Beads[0].Actions) == 0
+	})
+	n := len(r.out.sent())
+	time.Sleep(50 * time.Millisecond)
+	if len(r.out.sent()) != n {
+		t.Fatalf("unchanged probe pushed again: %v", r.out.methods())
+	}
+}
+
+func TestInitializeRootsRaceFree(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = r.srv.Handle(ctx, "initialize", json.RawMessage(`{"protocolVersion":1,"options":{"roots":["/a"]}}`))
+	}()
+	_, _ = r.srv.Handle(ctx, "beads.sync", syncParams(t, queued("scanned", "s-1", nil)))
+	<-done
+}
+
+// serveRig runs a Server with real actions over a pipe.
+func serveRig(t *testing.T, drainWait time.Duration) (*actionsHarness, *io.PipeWriter, chan error) {
+	t.Helper()
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.block = make(chan struct{})
+	h.r.entered = make(chan struct{}, 1)
+	srv := &Server{Engine: h.a.Engine, Actions: h.a, drainWait: drainWait}
+	in, w := io.Pipe()
+	out := &syncBuf{}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), in, out) }()
+	t.Cleanup(func() { _ = w.Close() })
+	return h, w, done
+}
+
+const invokeLine = `{"jsonrpc":"2.0","id":1,"method":"action.invoke","params":{"action":"dispatch","bead":{"db":"db","id":"a"}}}` + "\n"
+
+func TestServeReturnsOnEOF(t *testing.T) {
+	srv := &Server{Engine: NewEngine(time.Now)}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), strings.NewReader(""), &syncBuf{}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after EOF")
+	}
+}
+
+func TestServeShutdownNotificationStops(t *testing.T) {
+	_, w, done := serveRig(t, 0)
+	if _, err := io.WriteString(w, `{"jsonrpc":"2.0","method":"shutdown"}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not stop on shutdown")
+	}
+}
+
+func TestServeWaitsForInflightAction(t *testing.T) {
+	h, w, done := serveRig(t, 2*time.Second)
+	if _, err := io.WriteString(w, invokeLine); err != nil {
+		t.Fatal(err)
+	}
+	<-h.r.entered
+	_ = w.Close()
+	select {
+	case <-done:
+		t.Fatal("Serve returned with a dispatch in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(h.r.block)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after the dispatch finished")
+	}
+	if !slices.Contains(h.r.calls(), "claim a") {
+		t.Fatalf("dispatch did not finish before Serve returned: %v", h.r.calls())
+	}
+}
+
+func TestServeDrainIsBounded(t *testing.T) {
+	h, w, done := serveRig(t, 50*time.Millisecond)
+	logs := captureLog(t)
+	t.Cleanup(func() { close(h.r.block) })
+	if _, err := io.WriteString(w, invokeLine); err != nil {
+		t.Fatal(err)
+	}
+	<-h.r.entered
+	_ = w.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve waited past its bound")
+	}
+	if want := "tsk: dispatch a interrupted; check the bead, worktree and session"; !strings.Contains(logs.text(), want) {
+		t.Fatalf("log = %q", logs.text())
 	}
 }
 

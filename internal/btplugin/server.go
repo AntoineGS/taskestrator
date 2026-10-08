@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +28,17 @@ import (
 const (
 	unreachableMessage = "OpenCode service unreachable; start it with: opencode service start"
 	herdrProbeTimeout  = 5 * time.Second
+	herdrProbeEvery    = 30 * time.Second
 	reviewCheckTimeout = 30 * time.Second
+	reviewCheckLimit   = 4 // concurrent bd processes
+	reviewListLimit    = 5 // project names in the review toast
+
+	// defaultToastGap keeps toasts apart: bt drops a plugin toast arriving
+	// within 1s of the previous one.
+	defaultToastGap = 1100 * time.Millisecond
+	// defaultDrainWait bounds the wait for in-flight actions on exit, inside
+	// the 2s bt allows between closing stdin and killing the plugin.
+	defaultDrainWait = 1500 * time.Millisecond
 )
 
 var logger = log.New(os.Stderr, "tsk: ", 0)
@@ -37,14 +49,14 @@ type Server struct {
 	Engine       *Engine
 	Loop         *Loop
 	Actions      *Actions
-	Roots        []string // from initialize options.roots; default ~/gits
+	Roots        []string // from initialize options.roots; default ~/gits; guarded by mu
 	Scan         func(roots []string) []discover.Project
 	HerdrRunning func() bool
 	Tracker      tracker.Tracker
-	Stop         func() // ends the process on shutdown; may be nil
+	Stop         func() // ends Serve on shutdown; Serve sets it
 
-	// mu serializes "engine call + sending its result" and guards herdrUp
-	// and down.
+	// mu serializes "engine call + sending its result" and guards herdrUp,
+	// down and Roots.
 	mu      sync.Mutex
 	herdrUp bool
 	down    bool
@@ -55,8 +67,100 @@ type Server struct {
 	repoMu   sync.RWMutex
 	byDB     map[string]string
 
-	reviewMu sync.Mutex
-	reviewed map[string]bool
+	reviewMu  sync.Mutex
+	reviewed  map[string]bool
+	reviewSem chan struct{}
+
+	toastMu   sync.Mutex
+	lastToast time.Time
+
+	invokeMu   sync.Mutex
+	invokes    sync.WaitGroup
+	draining   bool
+	running    map[int]InvokeParams
+	nextInvoke int
+
+	toastGap   time.Duration // defaultToastGap when zero
+	herdrEvery time.Duration // herdrProbeEvery when zero
+	drainWait  time.Duration // defaultDrainWait when zero
+}
+
+// Serve runs the protocol on in and out until stdin closes or bt sends
+// shutdown. It then cancels in-flight actions and waits a bounded time for
+// them, so an interrupted dispatch can undo its completed steps before bt
+// kills the process.
+func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.Stop = cancel
+	s.Peer = NewPeer(in, out, s.Handle)
+	err := s.Peer.Run(ctx)
+	cancel()
+	s.drain()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+// track registers an action invoke; it refuses once Serve is draining.
+func (s *Server) track(p InvokeParams) (done func(), ok bool) {
+	s.invokeMu.Lock()
+	defer s.invokeMu.Unlock()
+	if s.draining {
+		return nil, false
+	}
+	if s.running == nil {
+		s.running = map[int]InvokeParams{}
+	}
+	s.nextInvoke++
+	n := s.nextInvoke
+	s.running[n] = p
+	s.invokes.Add(1)
+	return func() {
+		s.invokeMu.Lock()
+		delete(s.running, n)
+		s.invokeMu.Unlock()
+		s.invokes.Done()
+	}, true
+}
+
+// drain waits up to drainWait for tracked invokes and logs each dispatch
+// still running after that, since its undo may not finish.
+func (s *Server) drain() {
+	s.invokeMu.Lock()
+	s.draining = true
+	s.invokeMu.Unlock()
+
+	wait := s.drainWait
+	if wait <= 0 {
+		wait = defaultDrainWait
+	}
+	done := make(chan struct{})
+	go func() {
+		s.invokes.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-done:
+		return
+	case <-t.C:
+	}
+
+	s.invokeMu.Lock()
+	var ids []string
+	for _, p := range s.running {
+		if p.Action == "dispatch" {
+			ids = append(ids, p.Bead.ID)
+		}
+	}
+	s.invokeMu.Unlock()
+	sort.Strings(ids)
+	for _, id := range ids {
+		logger.Printf("dispatch %s interrupted; check the bead, worktree and session", id)
+	}
 }
 
 func (s *Server) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -79,6 +183,11 @@ func (s *Server) Handle(ctx context.Context, method string, params json.RawMessa
 		if s.Actions == nil {
 			return nil, Fail("unavailable", "actions are not available")
 		}
+		done, ok := s.track(p)
+		if !ok {
+			return nil, Fail("unavailable", "tsk is shutting down")
+		}
+		defer done()
 		return s.Actions.Invoke(ctx, p)
 	case "shutdown":
 		if s.Stop != nil {
@@ -96,18 +205,24 @@ func (s *Server) initialize(ctx context.Context, params json.RawMessage) (any, e
 			return nil, Fail("bad_params", err.Error())
 		}
 	}
-	s.Roots = nil
+	var roots []string
 	if raw, ok := p.Options["roots"].([]any); ok {
 		for _, r := range raw {
 			if str, ok := r.(string); ok && str != "" {
-				s.Roots = append(s.Roots, config.ExpandHome(str))
+				roots = append(roots, config.ExpandHome(str))
 			}
 		}
 	}
-	if len(s.Roots) == 0 {
-		s.Roots = []string{config.ExpandHome("~/gits")}
+	if len(roots) == 0 {
+		roots = []string{config.ExpandHome("~/gits")}
 	}
+	s.mu.Lock()
+	s.Roots = roots
+	s.mu.Unlock()
 	s.startOnce.Do(func() {
+		if s.HerdrRunning != nil {
+			go s.watchHerdr(ctx)
+		}
 		if s.Loop == nil {
 			return
 		}
@@ -157,8 +272,11 @@ func (s *Server) resolve(beads []Bead) {
 				return projects
 			}
 		}
+		s.mu.Lock()
+		roots := s.Roots
+		s.mu.Unlock()
 		byDB := map[string]string{}
-		for _, p := range scan(s.Roots) {
+		for _, p := range scan(roots) {
 			if _, dup := byDB[p.Name]; !dup {
 				byDB[p.Name] = p.Repo
 			}
@@ -169,9 +287,47 @@ func (s *Server) resolve(beads []Bead) {
 	})
 }
 
-func (s *Server) toast(msg, tone string) {
+func (s *Server) gap() time.Duration {
+	if s.toastGap > 0 {
+		return s.toastGap
+	}
+	return defaultToastGap
+}
+
+// sendToast sends a toast and records when. The caller holds s.toastMu.
+func (s *Server) sendToast(msg, tone string) {
 	if err := s.Peer.Notify("ui.toast", Toast{Message: msg, Tone: tone}); err != nil {
 		logger.Printf("send toast: %v", err)
+	}
+	s.lastToast = time.Now()
+}
+
+// toastNow sends a toast unless bt would drop it for following the previous
+// one too closely. It reports whether it sent.
+func (s *Server) toastNow(msg, tone string) bool {
+	s.toastMu.Lock()
+	defer s.toastMu.Unlock()
+	if !s.lastToast.IsZero() && time.Since(s.lastToast) < s.gap() {
+		return false
+	}
+	s.sendToast(msg, tone)
+	return true
+}
+
+// toastAfterGap sends a toast once the gap since the previous one has passed.
+func (s *Server) toastAfterGap(ctx context.Context, msg, tone string) {
+	for {
+		s.toastMu.Lock()
+		wait := s.gap() - time.Since(s.lastToast)
+		if s.lastToast.IsZero() || wait <= 0 {
+			s.sendToast(msg, tone)
+			s.toastMu.Unlock()
+			return
+		}
+		s.toastMu.Unlock()
+		if !sleep(ctx, wait) {
+			return
+		}
 	}
 }
 
@@ -194,6 +350,32 @@ func (s *Server) probeHerdr() bool {
 	return s.HerdrRunning != nil && s.HerdrRunning()
 }
 
+// watchHerdr re-probes herdr between syncs and pushes the action changes when
+// it starts or stops.
+func (s *Server) watchHerdr(ctx context.Context) {
+	every := s.herdrEvery
+	if every <= 0 {
+		every = herdrProbeEvery
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		up := s.probeHerdr()
+		s.mu.Lock()
+		if up != s.herdrUp {
+			s.herdrUp = up
+			set, clear := s.Engine.Diff(s.env())
+			s.push(set, clear)
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (s *Server) sync(ctx context.Context, beads []Bead) {
 	s.resolve(beads)
 	up := s.probeHerdr()
@@ -210,8 +392,10 @@ func (s *Server) sync(ctx context.Context, beads []Bead) {
 	s.checkReviewStatus(ctx, beads)
 }
 
-// checkReviewStatus warns once per database lacking the review status. It
-// runs in the background so slow bd calls never block the reader.
+// checkReviewStatus checks each database once for the review status, running
+// at most reviewCheckLimit bd processes at a time, and sends one combined
+// warning for the databases lacking it. It runs in the background so slow bd
+// calls never block the reader.
 func (s *Server) checkReviewStatus(ctx context.Context, beads []Bead) {
 	if s.Tracker == nil {
 		return
@@ -220,7 +404,9 @@ func (s *Server) checkReviewStatus(ctx context.Context, beads []Bead) {
 	s.reviewMu.Lock()
 	if s.reviewed == nil {
 		s.reviewed = map[string]bool{}
+		s.reviewSem = make(chan struct{}, reviewCheckLimit)
 	}
+	sem := s.reviewSem
 	for _, b := range beads {
 		if _, ok := todo[b.DB]; ok || s.reviewed[b.DB] {
 			continue
@@ -231,24 +417,63 @@ func (s *Server) checkReviewStatus(ctx context.Context, beads []Bead) {
 		}
 	}
 	s.reviewMu.Unlock()
-
-	for db, repo := range todo {
-		go func() {
-			cctx, cancel := context.WithTimeout(ctx, reviewCheckTimeout)
-			defer cancel()
-			has, err := s.Tracker.HasReviewStatus(cctx, repo)
-			if err != nil {
-				logger.Printf("review status check for %s: %v", db, err)
-				s.reviewMu.Lock()
-				delete(s.reviewed, db)
-				s.reviewMu.Unlock()
-				return
-			}
-			if !has {
-				s.toast(fmt.Sprintf(`%s has no "review" status; run in %s: bd config set status.custom "review:wip"`, db, repo), "warn")
-			}
-		}()
+	if len(todo) == 0 {
+		return
 	}
+
+	unmark := func(db string) {
+		s.reviewMu.Lock()
+		delete(s.reviewed, db)
+		s.reviewMu.Unlock()
+	}
+	go func() {
+		var mu sync.Mutex
+		var missing []string
+		var wg sync.WaitGroup
+		for db, repo := range todo {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					unmark(db)
+					return
+				}
+				defer func() { <-sem }()
+				cctx, cancel := context.WithTimeout(ctx, reviewCheckTimeout)
+				defer cancel()
+				has, err := s.Tracker.HasReviewStatus(cctx, repo)
+				if err != nil {
+					logger.Printf("review status check for %s: %v", db, err)
+					unmark(db)
+					return
+				}
+				if !has {
+					mu.Lock()
+					missing = append(missing, db)
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if len(missing) > 0 {
+			s.toastAfterGap(ctx, reviewWarning(missing), "warn")
+		}
+	}()
+}
+
+func reviewWarning(dbs []string) string {
+	sort.Strings(dbs)
+	list := strings.Join(dbs, ", ")
+	if len(dbs) > reviewListLimit {
+		list = fmt.Sprintf("%s and %d more", strings.Join(dbs[:reviewListLimit], ", "), len(dbs)-reviewListLimit)
+	}
+	subject := fmt.Sprintf("%d projects lack", len(dbs))
+	if len(dbs) == 1 {
+		subject = "1 project lacks"
+	}
+	return fmt.Sprintf(`%s the "review" status (%s); run in each: bd config set status.custom "review:wip"`, subject, list)
 }
 
 // onUpdate is the Loop.Update callback.
@@ -271,8 +496,9 @@ func (s *Server) onUpdate(snaps map[string]*status.Snapshot, reachable, full boo
 	case reachable:
 		s.down = false
 	case !s.down:
-		s.down = true
-		s.toast(unreachableMessage, "error")
+		// Latch only once sent: a toast bt would drop is retried on the
+		// next unreachable update.
+		s.down = s.toastNow(unreachableMessage, "error")
 	}
 }
 
@@ -287,7 +513,7 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 	bd := tracker.New()
 	git := gitwt.New()
 	loop := &Loop{Connect: connectOpenCode}
-	srv := &Server{Engine: NewEngine(time.Now), Loop: loop, Tracker: bd, Stop: cancel}
+	srv := &Server{Engine: NewEngine(time.Now), Loop: loop, Tracker: bd}
 
 	// Assign interfaces only on success, so they never hold a typed nil pointer.
 	var h herdr.Herdr
@@ -312,14 +538,9 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		HerdrUp:      srv.HerdrRunning,
 		RepoFor:      srv.repoFor,
 		OnDispatched: func(sessionID string) { loop.Refresh(sessionID) },
-		Late:         func(t Toast) { srv.toast(t.Message, t.Tone) },
+		Late:         func(t Toast) { go srv.toastAfterGap(ctx, t.Message, t.Tone) },
 	}
-	srv.Peer = NewPeer(in, out, srv.Handle)
-	err := srv.Peer.Run(ctx)
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+	return srv.Serve(ctx, in, out)
 }
 
 // dispatchDeps builds Actions.Deps. It resolves the OpenCode service on every
