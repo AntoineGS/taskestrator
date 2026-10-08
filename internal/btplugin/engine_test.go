@@ -3,6 +3,7 @@ package btplugin
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,29 +48,30 @@ func TestMapping(t *testing.T) {
 		name    string
 		bead    Bead
 		snap    *status.Snapshot
+		failed  bool // snapshot load failed (stored nil)
 		env     Env
 		value   string // "" = cleared / not shown
 		actions []string
 	}{
-		{"closed", mkBead("a", "closed", "s"), run, envOK(), "", nil},
-		{"untracked", mkBead("a", "in_progress", ""), nil, envOK(), "", nil},
-		{"review", mkBead("a", "review", "s"), run, envOK(), "review", nil},
-		{"queued", mkBead("a", "open", ""), nil, envOK(), "queued", []string{"dispatch"}},
-		{"queued no repo", mkBead("a", "open", ""), nil, Env{HerdrUp: true, RepoFor: func(Bead) string { return "" }}, "queued", nil},
-		{"queued nil repofor", mkBead("a", "open", ""), nil, Env{HerdrUp: true}, "queued", nil},
-		{"queued no herdr", mkBead("a", "open", ""), nil, Env{RepoFor: envOK().RepoFor}, "queued", nil},
-		{"lost", mkBead("a", "in_progress", "s"), &status.Snapshot{}, envOK(), "lost", []string{"dispatch"}},
-		{"lost no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{}, Env{RepoFor: envOK().RepoFor}, "lost", nil},
-		{"waiting", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true, Forms: 1}, envOK(), "waiting", []string{"jump"}},
-		{"waiting no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true}, Env{}, "waiting", nil},
-		{"running", mkBead("a", "in_progress", "s"), run, envOK(), "running", []string{"jump"}},
-		{"unknown", mkBead("a", "in_progress", "s"), nil, envOK(), "unknown", []string{"jump"}},
+		{"closed", mkBead("a", "closed", "s"), run, false, envOK(), "", nil},
+		{"untracked", mkBead("a", "in_progress", ""), nil, false, envOK(), "", nil},
+		{"review", mkBead("a", "review", "s"), run, false, envOK(), "review", nil},
+		{"queued", mkBead("a", "open", ""), nil, false, envOK(), "queued", []string{"dispatch"}},
+		{"queued no repo", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true, RepoFor: func(Bead) string { return "" }}, "queued", nil},
+		{"queued nil repofor", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true}, "queued", nil},
+		{"queued no herdr", mkBead("a", "open", ""), nil, false, Env{RepoFor: envOK().RepoFor}, "queued", nil},
+		{"lost", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, envOK(), "lost", []string{"dispatch"}},
+		{"lost no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, Env{RepoFor: envOK().RepoFor}, "lost", nil},
+		{"waiting", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true, Forms: 1}, false, envOK(), "waiting", []string{"jump"}},
+		{"waiting no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true}, false, Env{}, "waiting", nil},
+		{"running", mkBead("a", "in_progress", "s"), run, false, envOK(), "running", []string{"jump"}},
+		{"unknown", mkBead("a", "in_progress", "s"), nil, true, envOK(), "unknown", []string{"jump"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e, _ := newEng()
 			set, clear, _ := e.Sync([]Bead{tt.bead}, tt.env)
-			if s := tt.bead.Metadata["tsk.session"]; s != nil && tt.snap != nil {
+			if s := tt.bead.Metadata["tsk.session"]; s != nil && (tt.snap != nil || tt.failed) {
 				set2, clear2 := e.SetSnapshots(map[string]*status.Snapshot{"s": tt.snap}, true, tt.env)
 				set, clear = append(set, set2...), append(clear, clear2...)
 			}
@@ -111,17 +113,19 @@ func TestSinceKeptAndReset(t *testing.T) {
 	t0 := c.t
 	b := mkBead("a", "in_progress", "s")
 	e.Sync([]Bead{b}, envOK())
+	c.t = t0.Add(30 * time.Second)
+	t1 := c.t
 	set, _ := e.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: true, Running: true}}, true, envOK())
-	if got := one(t, set); !got.Fields["state"].Since.Equal(c.t) {
-		t.Fatalf("since = %v", got.Fields["state"].Since)
+	if got := one(t, set); !got.Fields["state"].Since.Equal(t1) {
+		t.Fatalf("since = %v, want %v", got.Fields["state"].Since, t1)
 	}
 	c.t = t0.Add(time.Minute)
-	// Same value, different detail (extra metadata) → push, since kept.
+	// Same value, different detail (extra metadata) -> push, since kept.
 	b2 := mkBead("a", "in_progress", "s")
 	b2.Metadata["tsk.branch"] = json.RawMessage(`"other"`)
 	set, _, _ = e.Sync([]Bead{b2}, envOK())
 	got := one(t, set)
-	if !got.Fields["state"].Since.Equal(t0) {
+	if !got.Fields["state"].Since.Equal(t1) {
 		t.Fatalf("since reset on unchanged value: %v", got.Fields["state"].Since)
 	}
 	c.t = t0.Add(2 * time.Minute)
@@ -243,4 +247,57 @@ func TestAllReplace(t *testing.T) {
 	if got := e.All(envOK()); len(got) != 1 {
 		t.Fatalf("All not repeatable: %+v", got)
 	}
+}
+
+func TestPendingSnapshotNotPushed(t *testing.T) {
+	e, _ := newEng()
+	set, clear, ns := e.Sync([]Bead{mkBead("a", "in_progress", "s")}, envOK())
+	if len(set)+len(clear) != 0 || len(ns) != 1 {
+		t.Fatalf("pending bead pushed: set=%v clear=%v ns=%v", set, clear, ns)
+	}
+	set, _ = e.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: true, Running: true}}, true, envOK())
+	if one(t, set).Fields["state"].Value != "running" {
+		t.Fatalf("not running: %+v", set)
+	}
+}
+
+func TestFailedLoadIsUnknown(t *testing.T) {
+	e, _ := newEng()
+	e.Sync([]Bead{mkBead("a", "in_progress", "s")}, envOK())
+	set, _ := e.SetSnapshots(map[string]*status.Snapshot{"s": nil}, true, envOK())
+	got := one(t, set)
+	if got.Fields["state"].Value != "unknown" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestAllOmitsPending(t *testing.T) {
+	e, _ := newEng()
+	e.Sync([]Bead{mkBead("a", "in_progress", "s"), mkBead("q", "open", "")}, envOK())
+	got := e.All(envOK())
+	if len(got) != 1 || got[0].ID != "q" {
+		t.Fatalf("All = %+v", got)
+	}
+}
+
+func TestConcurrentUse(t *testing.T) {
+	e, _ := newEng()
+	beads := []Bead{mkBead("a", "in_progress", "s1"), mkBead("b", "open", ""), mkBead("c", "in_progress", "s2")}
+	snaps := map[string]*status.Snapshot{"s1": {Exists: true, Running: true}, "s2": {Exists: true, Forms: 1}}
+	var wg sync.WaitGroup
+	run := func(f func(i int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				f(i)
+			}
+		}()
+	}
+	run(func(int) { e.Sync(beads, envOK()) })
+	run(func(i int) { e.SetSnapshots(snaps, i%7 != 0, envOK()) })
+	run(func(int) { e.All(envOK()) })
+	run(func(int) { e.Display(BeadKey{"db", "a"}); e.Bead(BeadKey{"db", "a"}); e.Reachable() })
+	run(func(int) { e.Sessions() })
+	wg.Wait()
 }

@@ -25,7 +25,14 @@ type sinceEntry struct {
 }
 
 // Engine maps beads and session snapshots to the plugin state pushed to bt.
-// It is safe for concurrent use.
+// It is safe for concurrent use, with these caller obligations:
+//   - Pushed state is recorded at compute time, so callers must serialize
+//     "engine call + sending its result" under one mutex of their own;
+//     otherwise results can reach bt out of order.
+//   - Env.RepoFor is called while the engine mutex is held. It must be fast
+//     (memoized) and must never call back into the Engine.
+//   - The result of All must always be sent as a replace push, even when it is
+//     empty.
 type Engine struct {
 	now func() time.Time
 
@@ -160,6 +167,21 @@ func (e *Engine) section(b Bead, d status.Display) string {
 	return out
 }
 
+// pending reports a live bead whose session snapshot has never been loaded
+// while the service is believed reachable. Nothing is pushed for it, so bt
+// keeps showing the previous value (or nothing).
+func (e *Engine) pending(b Bead) bool {
+	if !e.reachable {
+		return false
+	}
+	s := e.liveSession(b)
+	if s == "" {
+		return false
+	}
+	_, loaded := e.snaps[s]
+	return !loaded
+}
+
 // diff computes pushes for every bead against what was last pushed.
 func (e *Engine) diff(env Env) (set []BeadState, clear []BeadKey) {
 	keys := make([]BeadKey, 0, len(e.beads))
@@ -173,6 +195,9 @@ func (e *Engine) diff(env Env) (set []BeadState, clear []BeadKey) {
 		return keys[i].ID < keys[j].ID
 	})
 	for _, k := range keys {
+		if e.pending(e.beads[k]) {
+			continue
+		}
 		st, ok := e.state(e.beads[k], env)
 		if !ok {
 			if _, was := e.pushed[k]; was {
