@@ -27,6 +27,9 @@ type Actions struct {
 	HerdrUp      func() bool
 	RepoFor      func(b Bead) string
 	OnDispatched func(sessionID string) // Loop.Refresh
+	Late         func(t Toast)          // sends the outcome of a dispatch bt stopped waiting for; may be nil
+
+	lateAfter time.Duration // lateDispatch when zero
 
 	mu       sync.Mutex
 	inflight map[BeadKey]bool
@@ -43,16 +46,49 @@ type sentEntry struct {
 
 const sentTTL = 2 * time.Minute
 
+// lateDispatch is when bt (60s action timeout) may have stopped waiting for a
+// dispatch result.
+const lateDispatch = 50 * time.Second
+
 // Invoke runs one action. Refusals are returned as Fail errors.
 func (a *Actions) Invoke(ctx context.Context, p InvokeParams) (InvokeResult, error) {
 	a.prune()
 	switch p.Action {
 	case "dispatch":
-		return a.dispatch(ctx, BeadKey{DB: p.Bead.DB, ID: p.Bead.ID})
+		k := BeadKey{DB: p.Bead.DB, ID: p.Bead.ID}
+		start := time.Now()
+		res, err := a.dispatch(ctx, k)
+		a.report(k.ID, time.Since(start), err)
+		return res, err
 	case "jump":
 		return a.jump(ctx, BeadKey{DB: p.Bead.DB, ID: p.Bead.ID})
 	}
 	return InvokeResult{}, Fail("unknown_action", "unknown action "+p.Action)
+}
+
+// report logs a failed dispatch and, when bt may have timed out waiting,
+// sends the outcome through Late.
+func (a *Actions) report(id string, took time.Duration, err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+		if re, ok := err.(*RPCError); ok {
+			msg = re.Message
+		}
+		logger.Printf("dispatch %s failed: %s", id, msg)
+	}
+	limit := a.lateAfter
+	if limit <= 0 {
+		limit = lateDispatch
+	}
+	if a.Late == nil || took <= limit {
+		return
+	}
+	if err != nil {
+		a.Late(Toast{Message: fmt.Sprintf("Dispatch %s failed: %s", id, msg), Tone: "error"})
+		return
+	}
+	a.Late(Toast{Message: fmt.Sprintf("Dispatched %s (late)", id), Tone: "ok"})
 }
 
 func (a *Actions) herdrUp() bool {

@@ -303,31 +303,16 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		logger.Printf("herdr is not on PATH; jumping and dispatch are disabled")
 	}
 
-	var ocMu sync.Mutex
-	var oc *opencode.Client
 	srv.Actions = &Actions{
-		Engine:  srv.Engine,
-		Tracker: bd,
-		Git:     git,
-		Deps: func() (dispatch.Deps, error) {
-			if h == nil {
-				return dispatch.Deps{}, errors.New("herdr is not on PATH")
-			}
-			ocMu.Lock()
-			defer ocMu.Unlock()
-			if oc == nil {
-				c, err := opencode.FromService(ctx)
-				if err != nil {
-					return dispatch.Deps{}, err
-				}
-				oc = c
-			}
-			return dispatch.Deps{Tracker: bd, OpenCode: oc, Herdr: h, Git: git, Shell: execx.Command("sh")}, nil
-		},
+		Engine:       srv.Engine,
+		Tracker:      bd,
+		Git:          git,
+		Deps:         dispatchDeps(ctx, h, bd, git, dispatchOpenCode),
 		Herdr:        h,
 		HerdrUp:      srv.HerdrRunning,
 		RepoFor:      srv.repoFor,
 		OnDispatched: func(sessionID string) { loop.Refresh(sessionID) },
+		Late:         func(t Toast) { srv.toast(t.Message, t.Tone) },
 	}
 	srv.Peer = NewPeer(in, out, srv.Handle)
 	err := srv.Peer.Run(ctx)
@@ -335,6 +320,29 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		return nil
 	}
 	return err
+}
+
+// dispatchDeps builds Actions.Deps. It resolves the OpenCode service on every
+// dispatch, so a service restart on a new port or password is picked up.
+func dispatchDeps(ctx context.Context, h herdr.Herdr, bd tracker.Tracker, git gitwt.Git, connect func(context.Context) (dispatch.OpenCode, error)) func() (dispatch.Deps, error) {
+	return func() (dispatch.Deps, error) {
+		if h == nil {
+			return dispatch.Deps{}, errors.New("herdr is not on PATH")
+		}
+		oc, err := connect(ctx)
+		if err != nil {
+			return dispatch.Deps{}, err
+		}
+		return dispatch.Deps{Tracker: bd, OpenCode: oc, Herdr: h, Git: git, Shell: execx.Command("sh")}, nil
+	}
+}
+
+func dispatchOpenCode(ctx context.Context) (dispatch.OpenCode, error) {
+	c, err := opencode.FromService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func connectOpenCode(ctx context.Context) (Live, error) {

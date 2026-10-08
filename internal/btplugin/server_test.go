@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,21 @@ func (s *syncBuf) sent() []sent {
 		out = append(out, m)
 	}
 	return out
+}
+
+func (s *syncBuf) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// captureLog sends the package logger to a buffer for the test.
+func captureLog(t *testing.T) *syncBuf {
+	t.Helper()
+	buf := &syncBuf{}
+	logger.SetOutput(buf)
+	t.Cleanup(func() { logger.SetOutput(os.Stderr) })
+	return buf
 }
 
 func (s *syncBuf) methods() []string {

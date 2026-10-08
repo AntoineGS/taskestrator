@@ -354,6 +354,67 @@ func TestDispatchSentRaceDuringChecks(t *testing.T) {
 	}
 }
 
+func TestDispatchFailureLogged(t *testing.T) {
+	logs := captureLog(t)
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.failOn = "createsession"
+	var late []Toast
+	h.a.Late = func(t Toast) { late = append(late, t) }
+	_, err := invoke(h, "dispatch", "a")
+	wantFail(t, err, "dispatch_failed")
+	if !strings.Contains(logs.text(), "tsk: dispatch a failed: ") || !strings.Contains(logs.text(), "injected failure") {
+		t.Fatalf("log = %q", logs.text())
+	}
+	if len(late) != 0 {
+		t.Fatalf("prompt dispatch sent a late toast: %+v", late)
+	}
+}
+
+func TestLateDispatchToasts(t *testing.T) {
+	captureLog(t)
+	for _, tt := range []struct {
+		failOn, msg, tone string
+	}{
+		{"", "Dispatched a (late)", "ok"},
+		{"createsession", "Dispatch a failed: ", "error"},
+	} {
+		h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+		h.r.failOn = tt.failOn
+		h.a.lateAfter = time.Nanosecond
+		var late []Toast
+		h.a.Late = func(t Toast) { late = append(late, t) }
+		_, _ = invoke(h, "dispatch", "a")
+		if len(late) != 1 || !strings.HasPrefix(late[0].Message, tt.msg) || late[0].Tone != tt.tone {
+			t.Fatalf("failOn=%q late = %+v", tt.failOn, late)
+		}
+	}
+}
+
+func TestDispatchDepsResolvesOpenCodeEachTime(t *testing.T) {
+	r := &recorder{}
+	n := 0
+	deps := dispatchDeps(context.Background(), r, r, r, func(context.Context) (dispatch.OpenCode, error) {
+		n++
+		return r, nil
+	})
+	for range 2 {
+		d, err := deps()
+		if err != nil || d.OpenCode == nil {
+			t.Fatalf("deps = %+v, %v", d, err)
+		}
+	}
+	if n != 2 {
+		t.Fatalf("resolved %d times, want 2", n)
+	}
+	noHerdr := dispatchDeps(context.Background(), nil, r, r, func(context.Context) (dispatch.OpenCode, error) {
+		t.Fatal("resolved without herdr")
+		return nil, nil
+	})
+	if _, err := noHerdr(); err == nil {
+		t.Fatal("want error without herdr")
+	}
+}
+
 func TestSentPrunedOnInvoke(t *testing.T) {
 	h := lostHarness(t)
 	if _, err := invoke(h, "dispatch", "a"); err != nil {
