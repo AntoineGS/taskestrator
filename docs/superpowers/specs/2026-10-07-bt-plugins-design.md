@@ -514,6 +514,30 @@ tsk:
 - `make e2e`: real `bd`, OpenCode service and herdr, with the fake host in place
   of bt.
 
+## First local version (2026-10-07)
+
+The user wants the feature usable without waiting for upstream. The first
+version is built on local stacked branches and narrows a few points of this
+spec; upstream PRs can widen them later.
+
+- The plugin action menu opens with `P`. `v` is bound in the epics view, and
+  `P` is free in the list, board, tree and epics views.
+- Plugin actions are listed only in the action menu, not in the footer or
+  shortcuts sidebar.
+- The pending spinner shows on list rows only; in the board, tree and epics
+  views a notice ("Dispatching tsk-a1b…") is shown instead. The 45s timeout is
+  also checked on the spinner tick, not only on data reloads.
+- `bt plugins` prints the configured plugins, their resolved commands and
+  whether they are enabled. Runtime failures appear as footer notices.
+- Board swimlanes per plugin field (PRs 2 and 5) are deferred; BQL filters
+  (`tsk.state in (waiting, lost)`) cover grouping meanwhile.
+- tsk's `since` for a bead seen for the first time is the time tsk first saw
+  it, because `beads.sync` does not carry `updated_at`.
+- tsk calls `bd ready` when `dispatch` is invoked and refuses beads that are
+  not ready, because `beads.sync` does not say whether a bead is blocked.
+- herdr is considered running when `herdr status server` prints
+  `status: running`.
+
 ## Assumptions
 
 Checked on 2026-10-07 against beadstui `071a0794` and bd 1.3.1:
