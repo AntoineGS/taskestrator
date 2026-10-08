@@ -21,6 +21,12 @@ type Live interface {
 
 // Loop follows the OpenCode event stream and reports session snapshots
 // through Update. Update is only ever called from the goroutine running Run.
+//
+// Update(nil, false, true) may repeat on every failed connect or reload
+// attempt, so consumers must treat it idempotently. Refresh ids still pending
+// when a stream (re)connects are dropped because the full reload covers
+// Sessions(); callers must make a session visible in Sessions() before
+// calling Refresh.
 type Loop struct {
 	Connect  func(ctx context.Context) (Live, error)
 	Sessions func() []string
@@ -28,6 +34,8 @@ type Loop struct {
 
 	Debounce time.Duration
 	Backoff  []time.Duration
+
+	timeout time.Duration // per request; requestTimeout when zero
 
 	mu      sync.Mutex
 	pending []string
@@ -52,6 +60,13 @@ func (l *Loop) Refresh(ids ...string) {
 	case l.wake <- struct{}{}:
 	default:
 	}
+}
+
+func (l *Loop) reqTimeout() time.Duration {
+	if l.timeout > 0 {
+		return l.timeout
+	}
+	return requestTimeout
 }
 
 func (l *Loop) debounce() time.Duration {
@@ -101,13 +116,20 @@ func (l *Loop) Run(ctx context.Context) {
 			attempt++
 			continue
 		}
-		attempt = 0
-		if !l.serve(ctx, live, ch) {
+		switch l.serve(ctx, live, ch) {
+		case serveStopped:
 			return
-		}
-		// Stream closed: back off, then reconnect.
-		if !wait(l.backoff(0)) {
-			return
+		case serveFailed:
+			if !wait(l.backoff(attempt)) {
+				return
+			}
+			attempt++
+		default:
+			// Stream closed: back off, then reconnect.
+			attempt = 0
+			if !wait(l.backoff(0)) {
+				return
+			}
 		}
 	}
 }
@@ -124,35 +146,58 @@ func (l *Loop) connect(ctx context.Context) (Live, <-chan opencode.Event, error)
 	return live, ch, nil
 }
 
-func (l *Loop) load(ctx context.Context, live Live, ids []string, full bool) {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	active, err := live.Active(ctx)
+// load fetches the live state of ids and reports it. It returns false when
+// the service could not be reached (Update has been told, unless ctx is done).
+func (l *Loop) load(ctx context.Context, live Live, ids []string, full bool) bool {
+	actx, cancel := context.WithTimeout(ctx, l.reqTimeout())
+	active, err := live.Active(actx)
+	cancel()
+	if ctx.Err() != nil {
+		return false
+	}
 	if err != nil {
-		if ctx.Err() == nil || full {
-			l.Update(nil, false, true)
-		}
-		return
+		l.Update(nil, false, true)
+		return false
 	}
 	snaps := make(map[string]*status.Snapshot, len(ids))
 	for _, id := range ids {
-		snap, err := live.Snapshot(ctx, id, active)
+		sctx, cancel := context.WithTimeout(ctx, l.reqTimeout())
+		snap, err := live.Snapshot(sctx, id, active)
+		cancel()
 		if err != nil {
 			snaps[id] = nil
 			continue
 		}
 		snaps[id] = &snap
 	}
+	if ctx.Err() != nil {
+		return false
+	}
 	l.Update(snaps, true, full)
+	return true
 }
 
-// serve handles one connected stream. It returns false when ctx is done and
-// true when the stream closed.
-func (l *Loop) serve(ctx context.Context, live Live, ch <-chan opencode.Event) bool {
+type serveResult int
+
+const (
+	serveStopped serveResult = iota
+	serveClosed
+	serveFailed
+)
+
+// serve handles one connected stream. It returns serveStopped when ctx is
+// done, serveClosed when the stream closed and serveFailed when the initial
+// reload could not reach the service.
+func (l *Loop) serve(ctx context.Context, live Live, ch <-chan opencode.Event) serveResult {
 	l.mu.Lock()
 	l.pending = nil
 	l.mu.Unlock()
-	l.load(ctx, live, l.Sessions(), true)
+	if !l.load(ctx, live, l.Sessions(), true) {
+		if ctx.Err() != nil {
+			return serveStopped
+		}
+		return serveFailed
+	}
 
 	fire := make(chan string, 64)
 	timers := map[string]*time.Timer{}
@@ -164,15 +209,18 @@ func (l *Loop) serve(ctx context.Context, live Live, ch <-chan opencode.Event) b
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return serveStopped
 		case ev, ok := <-ch:
 			if !ok {
-				return ctx.Err() == nil
+				if ctx.Err() != nil {
+					return serveStopped
+				}
+				return serveClosed
 			}
 			if ev.SessionID == "" || !opencode.Relevant(ev.Type) {
 				continue
 			}
-			rctx, cancel := context.WithTimeout(ctx, requestTimeout)
+			rctx, cancel := context.WithTimeout(ctx, l.reqTimeout())
 			root, err := live.Root(rctx, ev.SessionID)
 			cancel()
 			if err != nil {

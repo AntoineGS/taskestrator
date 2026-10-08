@@ -75,8 +75,7 @@ type loopHarness struct {
 	done    chan struct{}
 }
 
-func startLoop(t *testing.T, connect func(context.Context) (Live, error), sessions []string) *loopHarness {
-	t.Helper()
+func newLoopHarness(connect func(context.Context) (Live, error), sessions []string) *loopHarness {
 	h := &loopHarness{updates: make(chan loopUpdate, 32), done: make(chan struct{})}
 	h.loop = &Loop{
 		Connect:  connect,
@@ -87,6 +86,11 @@ func startLoop(t *testing.T, connect func(context.Context) (Live, error), sessio
 		Debounce: 20 * time.Millisecond,
 		Backoff:  []time.Duration{5 * time.Millisecond},
 	}
+	return h
+}
+
+func (h *loopHarness) run(t *testing.T) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	go func() { h.loop.Run(ctx); close(h.done) }()
@@ -98,6 +102,12 @@ func startLoop(t *testing.T, connect func(context.Context) (Live, error), sessio
 			t.Error("Run did not stop")
 		}
 	})
+}
+
+func startLoop(t *testing.T, connect func(context.Context) (Live, error), sessions []string) *loopHarness {
+	t.Helper()
+	h := newLoopHarness(connect, sessions)
+	h.run(t)
 	return h
 }
 
@@ -219,5 +229,87 @@ func TestLoopRefreshLoadsNewSession(t *testing.T) {
 	u := h.next(t)
 	if u.full || !u.reachable || u.snaps["new"] == nil {
 		t.Fatalf("loopUpdate = %+v", u)
+	}
+}
+
+type flakyActive struct {
+	*fakeLive
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *flakyActive) Active(ctx context.Context) (map[string]bool, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	if n == 1 {
+		return nil, errors.New("restarting")
+	}
+	return f.fakeLive.Active(ctx)
+}
+
+func TestLoopRetriesWhenInitialReloadFails(t *testing.T) {
+	f := &flakyActive{fakeLive: newFakeLive()}
+	f.snaps["a"] = status.Snapshot{}
+	h := startLoop(t, func(context.Context) (Live, error) { return f, nil }, []string{"a"})
+	if u := h.next(t); u.reachable || !u.full || u.snaps != nil {
+		t.Fatalf("first update = %+v", u)
+	}
+	if u := h.next(t); !u.reachable || !u.full || u.snaps["a"] == nil {
+		t.Fatalf("second update = %+v", u)
+	}
+}
+
+type blockingActive struct{ *fakeLive }
+
+func (b blockingActive) Active(ctx context.Context) (map[string]bool, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestLoopNoUpdateWhenCancelledMidLoad(t *testing.T) {
+	f := blockingActive{newFakeLive()}
+	h := startLoop(t, func(context.Context) (Live, error) { return f, nil }, []string{"a"})
+	nextChan(t, f.fakeLive)
+	h.cancel()
+	<-h.done
+	h.none(t, 30*time.Millisecond)
+}
+
+func TestLoopActiveTimeoutIsFailure(t *testing.T) {
+	f := blockingActive{newFakeLive()}
+	h := newLoopHarness(func(context.Context) (Live, error) { return f, nil }, []string{"a"})
+	h.loop.timeout = 10 * time.Millisecond
+	h.run(t)
+	if u := h.next(t); u.reachable || !u.full || u.snaps != nil {
+		t.Fatalf("update = %+v", u)
+	}
+}
+
+type slowSnap struct{ *fakeLive }
+
+func (s slowSnap) Snapshot(ctx context.Context, id string, a map[string]bool) (status.Snapshot, error) {
+	select {
+	case <-time.After(30 * time.Millisecond):
+	case <-ctx.Done():
+		return status.Snapshot{}, ctx.Err()
+	}
+	return s.fakeLive.Snapshot(ctx, id, a)
+}
+
+func TestLoopSnapshotsHaveOwnTimeout(t *testing.T) {
+	f := slowSnap{newFakeLive()}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		f.snaps[id] = status.Snapshot{}
+	}
+	h := newLoopHarness(func(context.Context) (Live, error) { return f, nil }, []string{"a", "b", "c", "d"})
+	h.loop.timeout = 80 * time.Millisecond
+	h.run(t)
+	u := h.next(t)
+	for id, s := range u.snaps {
+		if s == nil {
+			t.Fatalf("%s timed out on a shared budget: %+v", id, u.snaps)
+		}
 	}
 }
