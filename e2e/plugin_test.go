@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,18 +153,25 @@ func TestPluginEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var sessionID string
 	t.Cleanup(func() {
-		bg := context.Background()
-		if sessionID != "" {
-			_ = oc.DeleteSession(bg, sessionID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		// The session is read back from the bead so a failure after dispatch
+		// cannot leak it.
+		if task, err := bd.Show(cctx, repo, id); err == nil {
+			if sid := task.Meta(tracker.MetaSession); sid != "" {
+				_ = oc.DeleteSession(cctx, sid)
+			}
 		}
-		if ws, ok, _ := h.WorkspaceFor(bg, repo); ok {
-			_ = exec.Command("herdr", "workspace", "close", ws).Run()
+		if ws, ok, _ := h.WorkspaceFor(cctx, repo); ok {
+			_ = exec.CommandContext(cctx, "herdr", "workspace", "close", ws).Run()
 		}
 		wt := filepath.Join(repo, ".worktrees", id)
-		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run()
-		_ = exec.Command("bd", "close", id).Run()
+		_ = exec.CommandContext(cctx, "git", "-C", repo, "worktree", "remove", "--force", wt).Run()
+		closeCmd := exec.CommandContext(cctx, "bd", "close", id)
+		closeCmd.Dir = repo
+		closeCmd.Env = append(os.Environ(), "BD_NON_INTERACTIVE=1")
+		_ = closeCmd.Run()
 	})
 
 	cmd := exec.CommandContext(ctx, bin, "plugin")
@@ -208,10 +214,12 @@ func TestPluginEndToEnd(t *testing.T) {
 		}
 	})
 
-	res := c.call("initialize", btplugin.InitializeParams{
-		ProtocolVersion: btplugin.ProtocolVersion,
-		Scope:           btplugin.Scope{Mode: "all"},
-		Options:         map[string]any{"roots": []string{filepath.Dir(repo)}},
+	res := c.call("initialize", map[string]any{
+		"protocolVersion": 1,
+		"bt":              map[string]any{"version": "0.0.0-e2e"},
+		"scope":           map[string]any{"mode": "project", "databases": []string{prefix}},
+		"popup":           false,
+		"options":         map[string]any{"roots": []string{filepath.Dir(repo)}},
 	}, 15*time.Second)
 	if res.Error != nil {
 		t.Fatalf("initialize: %+v", res.Error)
@@ -221,10 +229,13 @@ func TestPluginEndToEnd(t *testing.T) {
 		t.Fatalf("manifest = %s, err = %v", res.Result, err)
 	}
 
-	bead := func(status string, meta map[string]json.RawMessage) btplugin.Bead {
-		return btplugin.Bead{DB: prefix, ID: id, Repo: &repo, Status: status, Title: "Say ok", Type: "task", Priority: 2, Metadata: meta}
+	bead := func(status string, meta map[string]any) map[string]any {
+		return map[string]any{
+			"db": prefix, "id": id, "repo": repo, "status": status, "title": "Say ok",
+			"type": "task", "priority": 2, "assignee": "", "metadata": meta,
+		}
 	}
-	c.notify("beads.sync", btplugin.SyncParams{Revision: 1, Beads: []btplugin.Bead{bead("open", nil)}})
+	c.notify("beads.sync", map[string]any{"revision": 1, "beads": []any{bead("open", map[string]any{})}})
 	state, actions := c.waitState(id, []string{"queued"}, 30*time.Second)
 	if !contains(actions, "dispatch") {
 		t.Fatalf("state %s actions = %v, want dispatch", state, actions)
@@ -244,7 +255,7 @@ func TestPluginEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID = task.Meta(tracker.MetaSession)
+	sessionID := task.Meta(tracker.MetaSession)
 	if sessionID == "" {
 		t.Fatalf("no %s metadata after dispatch: %+v", tracker.MetaSession, task.Metadata)
 	}
@@ -252,18 +263,13 @@ func TestPluginEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta := map[string]json.RawMessage{}
+	meta := map[string]any{}
 	for k, v := range task.Metadata {
-		if !strings.HasPrefix(k, "tsk.") {
-			continue
+		if strings.HasPrefix(k, "tsk.") {
+			meta[k] = v
 		}
-		raw, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		meta[k] = raw
 	}
-	c.notify("beads.sync", btplugin.SyncParams{Revision: 2, Beads: []btplugin.Bead{bead("in_progress", meta)}})
+	c.notify("beads.sync", map[string]any{"revision": 2, "beads": []any{bead("in_progress", meta)}})
 	state, actions = c.waitState(id, []string{"running", "waiting"}, 60*time.Second)
 	t.Logf("bead %s is %s, actions %v", id, state, actions)
 
@@ -277,7 +283,7 @@ func TestPluginEndToEnd(t *testing.T) {
 	}
 
 	if res := c.call("shutdown", nil, 10*time.Second); res.Error != nil {
-		t.Fatal(fmt.Sprintf("shutdown: %+v", res.Error))
+		t.Fatalf("shutdown: %+v", res.Error)
 	}
 }
 
