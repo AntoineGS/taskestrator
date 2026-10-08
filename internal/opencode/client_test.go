@@ -104,6 +104,65 @@ func newWorld(t *testing.T) (*world, *Client) {
 
 func session(id, parent string) Session { return Session{ID: id, ParentID: parent} }
 
+func TestParseModel(t *testing.T) {
+	cases := []struct {
+		in   string
+		want ModelRef
+		bad  bool
+	}{
+		{in: "anthropic/claude-opus-5-5", want: ModelRef{ProviderID: "anthropic", ID: "claude-opus-5-5"}},
+		{in: "openai/gpt-6-luna#max", want: ModelRef{ProviderID: "openai", ID: "gpt-6-luna", Variant: "max"}},
+		{in: " anthropic/claude-haiku-4-5 ", want: ModelRef{ProviderID: "anthropic", ID: "claude-haiku-4-5"}},
+		{in: "", bad: true},
+		{in: "claude-opus-5-5", bad: true},
+		{in: "/claude", bad: true},
+		{in: "anthropic/", bad: true},
+		{in: "anthropic/claude#", bad: true},
+	}
+	for _, c := range cases {
+		got, err := ParseModel(c.in)
+		if c.bad {
+			if err == nil {
+				t.Errorf("ParseModel(%q) = %+v, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("ParseModel(%q) = %+v, %v; want %+v", c.in, got, err, c.want)
+		}
+	}
+}
+
+func TestCreateSessionSendsModel(t *testing.T) {
+	w, c := newWorld(t)
+	m := ModelRef{ProviderID: "anthropic", ID: "claude-opus-5-5"}
+	if _, err := c.CreateSession(context.Background(), CreateSession{Title: "t", Directory: "/d", Model: &m}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	got, _ := w.lastBody["model"].(map[string]any)
+	w.mu.Unlock()
+	if got["providerID"] != "anthropic" || got["id"] != "claude-opus-5-5" {
+		t.Fatalf("model = %v", got)
+	}
+	if _, ok := got["variant"]; ok {
+		t.Fatalf("empty variant must be omitted: %v", got)
+	}
+
+	w.mu.Lock()
+	w.lastBody = nil // Decode merges into an existing map
+	w.mu.Unlock()
+	if _, err := c.CreateSession(context.Background(), CreateSession{Title: "t", Directory: "/d"}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	_, has := w.lastBody["model"]
+	w.mu.Unlock()
+	if has {
+		t.Fatal("model must be omitted when unset")
+	}
+}
+
 func TestCreateSessionSendsLocationAndMetadata(t *testing.T) {
 	w, c := newWorld(t)
 	s, err := c.CreateSession(context.Background(), CreateSession{Title: "se-1: x", Directory: "/r/.worktrees/se-1", Metadata: map[string]string{"tsk.task": "se-1"}})

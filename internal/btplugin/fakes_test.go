@@ -30,6 +30,8 @@ type recorder struct {
 	readyGate    chan struct{} // when set, the first Ready call waits on it
 	readyEntered chan struct{} // signalled when that first Ready call starts
 	readyCalls   int
+
+	model *opencode.ModelRef // model of the last CreateSession
 }
 
 func (r *recorder) note(format string, args ...any) error {
@@ -105,6 +107,9 @@ func (r *recorder) IsIgnored(context.Context, string, string) (bool, error) {
 }
 
 func (r *recorder) CreateSession(_ context.Context, in opencode.CreateSession) (opencode.Session, error) {
+	r.mu.Lock()
+	r.model = in.Model
+	r.mu.Unlock()
 	if err := r.note("createsession %s", in.Directory); err != nil {
 		return opencode.Session{}, err
 	}

@@ -39,7 +39,12 @@ plugins:
     command: ["tsk", "plugin"]
     options:
       roots: ["~/gits"]   # where to look for .beads/metadata.json
+      model: "anthropic/claude-opus-5-5"   # optional: provider/id[#variant]
 ```
+
+`model` sets the model of the OpenCode sessions tsk creates. Without it, they
+use OpenCode's default model. An invalid value shows a warning and falls back
+to the default.
 
 Run `bt -g` for the global view across projects. On a task:
 

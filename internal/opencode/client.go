@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 )
 
@@ -41,6 +42,25 @@ type CreateSession struct {
 	Title     string
 	Directory string
 	Metadata  map[string]string
+	Model     *ModelRef // nil uses OpenCode's default model
+}
+
+// ModelRef selects a session's model, as OpenCode's Model.Ref.
+type ModelRef struct {
+	ProviderID string `json:"providerID"`
+	ID         string `json:"id"`
+	Variant    string `json:"variant,omitempty"`
+}
+
+// ParseModel reads "provider/id" or "provider/id#variant".
+func ParseModel(s string) (ModelRef, error) {
+	s = strings.TrimSpace(s)
+	ref, variant, hasVariant := strings.Cut(s, "#")
+	provider, id, ok := strings.Cut(ref, "/")
+	if !ok || provider == "" || id == "" || (hasVariant && variant == "") {
+		return ModelRef{}, fmt.Errorf("model %q: want provider/id or provider/id#variant", s)
+	}
+	return ModelRef{ProviderID: provider, ID: id, Variant: variant}, nil
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -101,6 +121,9 @@ func (c *Client) CreateSession(ctx context.Context, in CreateSession) (Session, 
 	body := map[string]any{"title": in.Title, "location": map[string]string{"directory": in.Directory}}
 	if len(in.Metadata) > 0 {
 		body["metadata"] = in.Metadata
+	}
+	if in.Model != nil {
+		body["model"] = in.Model
 	}
 	var out struct {
 		Data Session `json:"data"`

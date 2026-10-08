@@ -38,6 +38,7 @@ type Request struct {
 	Project discover.Project
 	Task    tracker.Task
 	File    config.ProjectFile
+	Model   *opencode.ModelRef // nil uses OpenCode's default model
 }
 
 // Result describes a dispatched task. TabError is set when the agent started
@@ -107,6 +108,7 @@ func Run(ctx context.Context, d Deps, req Request) (Result, error) {
 	sctx, cancel := context.WithTimeout(ctx, stepTimeout)
 	sess, err := d.OpenCode.CreateSession(sctx, opencode.CreateSession{
 		Title: id + ": " + req.Task.Title, Directory: wt, Metadata: map[string]string{"tsk.task": id},
+		Model: req.Model,
 	})
 	cancel()
 	if err != nil {

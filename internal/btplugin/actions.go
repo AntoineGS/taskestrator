@@ -13,6 +13,7 @@ import (
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
 	"github.com/AntoineGS/taskestrator/internal/gitwt"
 	"github.com/AntoineGS/taskestrator/internal/herdr"
+	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/status"
 	"github.com/AntoineGS/taskestrator/internal/tracker"
 )
@@ -26,8 +27,9 @@ type Actions struct {
 	Herdr        herdr.Herdr                   // nil when herdr unavailable
 	HerdrUp      func() bool
 	RepoFor      func(b Bead) string
-	OnDispatched func(sessionID string) // Loop.Refresh
-	Late         func(t Toast)          // sends the outcome of a dispatch bt stopped waiting for; may be nil
+	OnDispatched func(sessionID string)    // Loop.Refresh
+	Model        func() *opencode.ModelRef // model for new sessions; nil or nil result uses OpenCode's default
+	Late         func(t Toast)             // sends the outcome of a dispatch bt stopped waiting for; may be nil
 
 	lateAfter time.Duration // lateDispatch when zero
 
@@ -236,8 +238,12 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if err != nil {
 		return InvokeResult{}, Fail("dispatch_failed", err.Error())
 	}
+	var model *opencode.ModelRef
+	if a.Model != nil {
+		model = a.Model()
+	}
 	res, err := dispatch.Run(ctx, deps, dispatch.Request{
-		Project: discover.Project{Name: k.DB, Repo: repo}, Task: task, File: file,
+		Project: discover.Project{Name: k.DB, Repo: repo}, Task: task, File: file, Model: model,
 	})
 	if err != nil {
 		return InvokeResult{}, Fail("dispatch_failed", strings.ReplaceAll(err.Error(), "\n", "; "))

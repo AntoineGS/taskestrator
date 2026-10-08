@@ -56,10 +56,11 @@ type Server struct {
 	Stop         func() // ends Serve on shutdown; Serve sets it
 
 	// mu serializes "engine call + sending its result" and guards herdrUp,
-	// down and Roots.
+	// down, Roots and model.
 	mu      sync.Mutex
 	herdrUp bool
 	down    bool
+	model   *opencode.ModelRef // from initialize options.model; nil uses OpenCode's default
 
 	startOnce sync.Once
 
@@ -216,8 +217,19 @@ func (s *Server) initialize(ctx context.Context, params json.RawMessage) (any, e
 	if len(roots) == 0 {
 		roots = []string{config.ExpandHome("~/gits")}
 	}
+	var model *opencode.ModelRef
+	if raw, ok := p.Options["model"].(string); ok && strings.TrimSpace(raw) != "" {
+		m, err := opencode.ParseModel(raw)
+		if err != nil {
+			logger.Printf("ignoring options.model: %v", err)
+			go s.toastAfterGap(ctx, fmt.Sprintf("tsk: options.model %q is not provider/id; using OpenCode's default model", raw), "warn")
+		} else {
+			model = &m
+		}
+	}
 	s.mu.Lock()
 	s.Roots = roots
+	s.model = model
 	s.mu.Unlock()
 	s.startOnce.Do(func() {
 		if s.HerdrRunning != nil {
@@ -247,6 +259,13 @@ func (s *Server) repoFor(b Bead) string {
 	s.repoMu.RLock()
 	defer s.repoMu.RUnlock()
 	return s.byDB[b.DB]
+}
+
+// Model returns the model new sessions use, or nil for OpenCode's default.
+func (s *Server) Model() *opencode.ModelRef {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
 }
 
 // resolve scans the roots once (lazily) when some bead has no repo.
@@ -538,6 +557,7 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		HerdrUp:      srv.HerdrRunning,
 		RepoFor:      srv.repoFor,
 		OnDispatched: func(sessionID string) { loop.Refresh(sessionID) },
+		Model:        srv.Model,
 		Late:         func(t Toast) { go srv.toastAfterGap(ctx, t.Message, t.Tone) },
 	}
 	return srv.Serve(ctx, in, out)

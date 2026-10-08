@@ -25,6 +25,7 @@ type recorder struct {
 	hasWS      bool
 	focusFails int
 	promptIn   string
+	model      *opencode.ModelRef
 }
 
 func (r *recorder) note(format string, args ...any) error {
@@ -71,6 +72,7 @@ func (r *recorder) RemoveWorktree(_ context.Context, _, path, _ string, deleteBr
 func (r *recorder) IsIgnored(context.Context, string, string) (bool, error) { return true, nil }
 
 func (r *recorder) CreateSession(_ context.Context, in opencode.CreateSession) (opencode.Session, error) {
+	r.model = in.Model
 	if err := r.note("createsession %s %s %s", in.Directory, in.Title, in.Metadata["tsk.task"]); err != nil {
 		return opencode.Session{}, err
 	}
@@ -157,6 +159,27 @@ func TestRunSuccess(t *testing.T) {
 		if !strings.Contains(r.promptIn, want) {
 			t.Errorf("prompt is missing %q", want)
 		}
+	}
+}
+
+func TestRunPassesModel(t *testing.T) {
+	r := &recorder{added: gitwt.Added{Worktree: true, Branch: true}}
+	m := opencode.ModelRef{ProviderID: "anthropic", ID: "claude-opus-5-5"}
+	withModel := req
+	withModel.Model = &m
+	if _, err := Run(context.Background(), deps(r), withModel); err != nil {
+		t.Fatal(err)
+	}
+	if r.model == nil || *r.model != m {
+		t.Fatalf("model = %+v", r.model)
+	}
+
+	r = &recorder{added: gitwt.Added{Worktree: true, Branch: true}}
+	if _, err := Run(context.Background(), deps(r), req); err != nil {
+		t.Fatal(err)
+	}
+	if r.model != nil {
+		t.Fatalf("model = %+v, want nil when unset", r.model)
 	}
 }
 

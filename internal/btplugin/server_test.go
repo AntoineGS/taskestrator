@@ -180,6 +180,41 @@ func TestInitializeDefaultsRoots(t *testing.T) {
 	}
 }
 
+func TestInitializeModelOption(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := r.srv.Handle(ctx, "initialize", json.RawMessage(`{"protocolVersion":1,"options":{"model":"anthropic/claude-opus-5-5#high"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	m := r.srv.Model()
+	if m == nil || m.ProviderID != "anthropic" || m.ID != "claude-opus-5-5" || m.Variant != "high" {
+		t.Fatalf("model = %+v", m)
+	}
+}
+
+func TestInitializeBadModelWarnsAndFallsBack(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := r.srv.Handle(ctx, "initialize", json.RawMessage(`{"protocolVersion":1,"options":{"model":"claude-opus-5-5"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if m := r.srv.Model(); m != nil {
+		t.Fatalf("model = %+v, want nil (OpenCode default)", m)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, msg := range r.out.sent() {
+			if msg.Method == "ui.toast" && strings.Contains(string(msg.Params), "claude-opus-5-5") && strings.Contains(string(msg.Params), "warn") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no warn toast; sent = %v", r.out.methods())
+}
+
 func TestSyncPushesSetThenClear(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()

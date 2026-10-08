@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
+	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/status"
 )
 
@@ -129,6 +130,22 @@ func TestDispatchHappy(t *testing.T) {
 	}
 	if slices.Contains(got, "addreviewstatus") {
 		t.Fatal("must never add the review status")
+	}
+}
+
+func TestDispatchPassesModel(t *testing.T) {
+	repo := t.TempDir()
+	h := newActions(t, repo, mkBead("a", "open", ""))
+	m := opencode.ModelRef{ProviderID: "anthropic", ID: "claude-opus-5-5"}
+	h.a.Model = func() *opencode.ModelRef { return &m }
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	h.r.mu.Lock()
+	got := h.r.model
+	h.r.mu.Unlock()
+	if got == nil || *got != m {
+		t.Fatalf("session model = %+v", got)
 	}
 }
 

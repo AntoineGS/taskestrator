@@ -18,6 +18,7 @@ const usage = `tsk is a bt plugin; bt starts it. Add it to ~/.config/bt/config.y
       command: ["tsk", "plugin"]
       options:
         roots: ["~/gits"]
+        model: "anthropic/claude-opus-5-5"   # optional
 
 usage:
   tsk plugin    speak the bt plugin protocol on stdin/stdout (started by bt)`
