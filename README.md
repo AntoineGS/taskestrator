@@ -67,22 +67,28 @@ command = "bt -g --popup"
 
 ### Errors
 
-An action that cannot run shows one of these in bt:
+When an action cannot run, bt shows tsk's message. You may see these messages
+(the type is for reference; tsk returns it as `data.type`, and logs dispatch
+failures to stderr):
 
-| Error | Meaning |
-|---|---|
-| `no_repo` | no checkout was found for the task's database; add its parent to `roots` |
-| `no_herdr` | herdr is not running |
-| `not_ready` | the task is blocked |
-| `no_review_status` | the project lacks the `review` status |
-| `worktrees_not_ignored` | `.worktrees/` is not git-ignored in the repository |
-| `busy` | the task is already being dispatched, or was just dispatched |
-| `not_dispatchable` | the task is not queued or lost |
-| `check_failed` | a pre-dispatch check (`bd` or `git`) failed |
-| `dispatch_failed` | a dispatch step failed; the message names it and earlier steps are undone |
-| `not_dispatched` | the task has no agent session to jump to |
-| `session_lost` | the agent session is gone; press `D` to dispatch again |
-| `jump_failed` | the tab could not be focused or reopened |
+| Message | Type | Meaning |
+|---|---|---|
+| no checkout found for `<db>`; add its parent to roots | `no_repo` | no checkout was found for the task's database |
+| cannot tell which checkout `<id>` belongs to; add its parent to roots | `no_repo` | the task's checkout is unknown, so its tab cannot be found |
+| herdr is not running | `no_herdr` | start herdr |
+| `<id>` is blocked | `not_ready` | the task has open blockers |
+| this project has no review status; run: … | `no_review_status` | the project lacks the `review` status |
+| .worktrees/ is not git-ignored in this repo; … | `worktrees_not_ignored` | add `.worktrees/` to `.gitignore` |
+| `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
+| `<id>` is `<state>` | `not_dispatchable` | the task is not queued or lost |
+| (the `bd` or `git` error) | `check_failed` | a pre-dispatch check failed |
+| (the failing step) | `dispatch_failed` | a dispatch step failed; earlier steps are undone |
+| `<id>` has not been dispatched | `not_dispatched` | the task has no agent session to jump to |
+| `<id>`'s agent session is gone; press D … | `session_lost` | dispatch the task again |
+| (the herdr error) | `jump_failed` | the tab could not be focused or reopened |
+
+tsk scans `roots` for checkouts once per plugin process, so a repository
+cloned after bt started is found after bt restarts.
 
 ### Per-project setup
 
