@@ -160,7 +160,11 @@ func (e *Engine) section(b Bead, d status.Display) string {
 	case status.Lost:
 		out += "Session not found in OpenCode; dispatch again with D."
 	case status.Unknown:
-		out += "OpenCode service unreachable."
+		if e.reachable {
+			out += "Could not load this session's state from OpenCode."
+		} else {
+			out += "OpenCode service unreachable."
+		}
 	default:
 		out = strings.TrimRight(out, "\n")
 	}

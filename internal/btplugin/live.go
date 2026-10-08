@@ -2,6 +2,7 @@ package btplugin
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -26,7 +27,8 @@ type Live interface {
 // attempt, so consumers must treat it idempotently. Refresh ids still pending
 // when a stream (re)connects are dropped because the full reload covers
 // Sessions(); callers must make a session visible in Sessions() before
-// calling Refresh.
+// calling Refresh. Stream events for root sessions not in Sessions() are
+// ignored.
 type Loop struct {
 	Connect  func(ctx context.Context) (Live, error)
 	Sessions func() []string
@@ -237,6 +239,9 @@ func (l *Loop) serve(ctx context.Context, live Live, ch <-chan opencode.Event) s
 			})
 		case root := <-fire:
 			delete(timers, root)
+			if !slices.Contains(l.Sessions(), root) {
+				continue
+			}
 			l.load(ctx, live, []string{root}, false)
 		case <-l.wake:
 			l.mu.Lock()

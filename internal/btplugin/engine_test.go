@@ -269,6 +269,9 @@ func TestFailedLoadIsUnknown(t *testing.T) {
 	if got.Fields["state"].Value != "unknown" {
 		t.Fatalf("got %+v", got)
 	}
+	if sec := got.Sections["agent"]; !strings.HasSuffix(sec, "Could not load this session's state from OpenCode.") {
+		t.Fatalf("section = %q", sec)
+	}
 }
 
 func TestAllOmitsPending(t *testing.T) {

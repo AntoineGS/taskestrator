@@ -163,7 +163,7 @@ func TestLoopDebouncesChildEventsToRoot(t *testing.T) {
 	f := newFakeLive()
 	f.snaps["root"] = status.Snapshot{}
 	f.parents["child"] = "root"
-	h := startLoop(t, constLive(f), nil)
+	h := startLoop(t, constLive(f), []string{"root"})
 	h.next(t)
 	ch := nextChan(t, f)
 	for i := 0; i < 5; i++ {
@@ -175,8 +175,26 @@ func TestLoopDebouncesChildEventsToRoot(t *testing.T) {
 		t.Fatalf("loopUpdate = %+v", u)
 	}
 	h.none(t, 80*time.Millisecond)
-	if n := f.calls("root"); n != 1 {
-		t.Fatalf("root loaded %d times, want 1", n)
+	if n := f.calls("root"); n != 2 {
+		t.Fatalf("root loaded %d times, want 2 (start + one debounced)", n)
+	}
+}
+
+func TestLoopSkipsEventsForOtherSessions(t *testing.T) {
+	f := newFakeLive()
+	f.snaps["a"] = status.Snapshot{}
+	f.snaps["other"] = status.Snapshot{}
+	h := startLoop(t, constLive(f), []string{"a"})
+	h.next(t)
+	ch := nextChan(t, f)
+	ch <- opencode.Event{Type: "session.status", SessionID: "other"}
+	h.none(t, 80*time.Millisecond)
+	if n := f.calls("other"); n != 0 {
+		t.Fatalf("non-tsk session loaded %d times", n)
+	}
+	ch <- opencode.Event{Type: "session.status", SessionID: "a"}
+	if u := h.next(t); len(u.snaps) != 1 || u.snaps["a"] == nil {
+		t.Fatalf("loopUpdate = %+v", u)
 	}
 }
 
