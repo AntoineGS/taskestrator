@@ -3,8 +3,10 @@ package btplugin
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/config"
 	"github.com/AntoineGS/taskestrator/internal/discover"
@@ -28,7 +30,18 @@ type Actions struct {
 
 	mu       sync.Mutex
 	inflight map[BeadKey]bool
+	sent     map[BeadKey]sentEntry
+	now      func() time.Time // time.Now when nil
 }
+
+// sentEntry records a finished dispatch until bt's sync shows it: was is the
+// session the bead had before, and a bead still showing it is not yet updated.
+type sentEntry struct {
+	was string
+	at  time.Time
+}
+
+const sentTTL = 2 * time.Minute
 
 // Invoke runs one action. Refusals are returned as Fail errors.
 func (a *Actions) Invoke(ctx context.Context, p InvokeParams) (InvokeResult, error) {
@@ -58,6 +71,38 @@ func (a *Actions) acquire(k BeadKey) bool {
 	return true
 }
 
+func (a *Actions) clock() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
+}
+
+// justSent reports whether k was dispatched and the engine has not caught up,
+// pruning the entry once it has.
+func (a *Actions) justSent(k BeadKey, b Bead) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e, ok := a.sent[k]
+	if !ok {
+		return false
+	}
+	if a.clock().Sub(e.at) >= sentTTL || metaString(b, tracker.MetaSession) != e.was || b.Status == "closed" {
+		delete(a.sent, k)
+		return false
+	}
+	return true
+}
+
+func (a *Actions) markSent(k BeadKey, was string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sent == nil {
+		a.sent = map[BeadKey]sentEntry{}
+	}
+	a.sent[k] = sentEntry{was: was, at: a.clock()}
+}
+
 func (a *Actions) release(k BeadKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -72,6 +117,9 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	d, _ := a.Engine.Display(k)
 	if d.State != status.Queued && d.State != status.Lost {
 		return InvokeResult{}, Fail("not_dispatchable", fmt.Sprintf("%s is %s", k.ID, d.State))
+	}
+	if a.justSent(k, b) {
+		return InvokeResult{}, Fail("busy", k.ID+" was just dispatched; waiting for bt to refresh")
 	}
 	repo := a.RepoFor(b)
 	if repo == "" {
@@ -132,6 +180,7 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if err != nil {
 		return InvokeResult{}, Fail("dispatch_failed", strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
+	a.markSent(k, metaString(b, tracker.MetaSession))
 	msg := fmt.Sprintf("Dispatched %s (session %s)", k.ID, res.SessionID)
 	if res.TabError != nil {
 		msg += "; tab not opened: " + res.TabError.Error()
@@ -151,6 +200,9 @@ func (a *Actions) jump(ctx context.Context, k BeadKey) (InvokeResult, error) {
 	if session == "" {
 		return InvokeResult{}, Fail("not_dispatched", k.ID+" has not been dispatched")
 	}
+	if d, _ := a.Engine.Display(k); d.State == status.Lost {
+		return InvokeResult{}, Fail("session_lost", k.ID+"'s agent session is gone; press D to dispatch it again")
+	}
 	if !a.herdrUp() {
 		return InvokeResult{}, Fail("no_herdr", "herdr is not running")
 	}
@@ -158,9 +210,12 @@ func (a *Actions) jump(ctx context.Context, k BeadKey) (InvokeResult, error) {
 	repo := a.RepoFor(b)
 	if repo == "" {
 		repo, _ = strings.CutSuffix(worktree, "/.worktrees/"+k.ID)
-		if repo == worktree {
+		if repo == worktree || !filepath.IsAbs(repo) {
 			repo = ""
 		}
+	}
+	if repo == "" {
+		return InvokeResult{}, Fail("no_repo", fmt.Sprintf("cannot tell which checkout %s belongs to; add its parent to roots", k.ID))
 	}
 	task := tracker.Task{ID: k.ID, Title: b.Title, Metadata: map[string]any{
 		tracker.MetaSession: session, tracker.MetaWorktree: worktree,

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
 	"github.com/AntoineGS/taskestrator/internal/status"
@@ -184,9 +185,10 @@ func TestDispatchBusy(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	h.r.block = nil
-	if _, err := invoke(h, "dispatch", "a"); err != nil {
-		t.Fatalf("in-flight mark not released: %v", err)
+	// The in-flight mark is released; only the sent guard now refuses.
+	_, err = invoke(h, "dispatch", "a")
+	if re := wantFail(t, err, "busy"); !strings.Contains(re.Message, "just dispatched") {
+		t.Fatalf("in-flight mark not released: %q", re.Message)
 	}
 }
 
@@ -233,5 +235,94 @@ func TestJumpDerivesRepoFromWorktree(t *testing.T) {
 	got := h.r.calls()
 	if !slices.Contains(got, "createworkspace "+repo+" db") {
 		t.Fatalf("repo not derived from worktree: %v", got)
+	}
+}
+
+func lostEnv() Env { return Env{HerdrUp: true, RepoFor: func(Bead) string { return "/repo" }} }
+
+func lostHarness(t *testing.T) *actionsHarness {
+	t.Helper()
+	h := newActions(t, t.TempDir(), mkBead("a", "in_progress", "s"))
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, lostEnv())
+	return h
+}
+
+func TestDispatchSentGuard(t *testing.T) {
+	h := lostHarness(t)
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	n := len(h.r.calls())
+	_, err := invoke(h, "dispatch", "a")
+	re := wantFail(t, err, "busy")
+	if !strings.Contains(re.Message, "a was just dispatched; waiting for bt to refresh") {
+		t.Fatalf("message = %q", re.Message)
+	}
+	if len(h.r.calls()) != n {
+		t.Fatal("second dispatch must not run")
+	}
+
+	// bt syncs the new session, and that session is lost too.
+	h.a.Engine.Sync([]Bead{mkBead("a", "in_progress", "s2")}, lostEnv())
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s2": {Exists: false}}, true, lostEnv())
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatalf("sent entry not pruned once the session changed: %v", err)
+	}
+}
+
+func TestDispatchSentGuardExpires(t *testing.T) {
+	h := lostHarness(t)
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	h.a.now = func() time.Time { return now }
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	_, err := invoke(h, "dispatch", "a")
+	wantFail(t, err, "busy")
+	now = now.Add(2 * time.Minute)
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatalf("sent entry not pruned after 2 minutes: %v", err)
+	}
+}
+
+func TestDispatchFailureDoesNotMarkSent(t *testing.T) {
+	h := lostHarness(t)
+	h.r.failOn = "createsession"
+	_, err := invoke(h, "dispatch", "a")
+	wantFail(t, err, "dispatch_failed")
+	h.r.failOn = ""
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatalf("retry after failure refused: %v", err)
+	}
+}
+
+func TestJumpNoRepoRefused(t *testing.T) {
+	for _, wt := range []string{"/elsewhere/a", "relative/.worktrees/a"} {
+		b := mkBead("a", "in_progress", "s")
+		b.Metadata["tsk.worktree"] = json.RawMessage(`"` + wt + `"`)
+		h := newActions(t, "", b)
+		h.r.panes["s"] = "w1:p1"
+		_, err := invoke(h, "jump", "a")
+		re := wantFail(t, err, "no_repo")
+		if !strings.Contains(re.Message, "cannot tell which checkout a belongs to; add its parent to roots") {
+			t.Fatalf("message = %q", re.Message)
+		}
+		if len(h.r.calls()) != 0 {
+			t.Fatalf("must not touch herdr: %v", h.r.calls())
+		}
+	}
+}
+
+func TestJumpLostRefused(t *testing.T) {
+	h := lostHarness(t)
+	h.r.panes["s"] = "w1:p1"
+	_, err := invoke(h, "jump", "a")
+	re := wantFail(t, err, "session_lost")
+	if !strings.Contains(re.Message, "a's agent session is gone; press D to dispatch it again") {
+		t.Fatalf("message = %q", re.Message)
+	}
+	if len(h.r.calls()) != 0 {
+		t.Fatalf("must not touch herdr: %v", h.r.calls())
 	}
 }
