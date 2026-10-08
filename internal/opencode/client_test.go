@@ -69,7 +69,15 @@ func (w *world) handler() http.Handler {
 			case len(rest) == 1 && r.Method == http.MethodDelete:
 				rw.WriteHeader(http.StatusNoContent)
 			case rest[1] == "form":
-				writeJSON(map[string]any{"data": make([]map[string]string, w.forms[s.ID])})
+				forms := make([]map[string]any, w.forms[s.ID])
+				for i := range forms {
+					forms[i] = map[string]any{
+						"id": "frm", "title": "Questions",
+						"metadata": map[string]any{"kind": "question"},
+						"fields":   []map[string]string{{"title": "Which DB?"}},
+					}
+				}
+				writeJSON(map[string]any{"data": forms})
 			case rest[1] == "permission":
 				writeJSON(map[string]any{"data": make([]map[string]string, w.permissions[s.ID])})
 			case rest[1] == "prompt":
@@ -204,5 +212,43 @@ func TestReadPassword(t *testing.T) {
 	}
 	if pw, err := readPassword(path); err != nil || pw != "pw1" {
 		t.Fatalf("got %q, %v", pw, err)
+	}
+}
+
+func TestFirstQuestion(t *testing.T) {
+	w, c := newWorld(t)
+	w.sessions["ses_a"] = session("ses_a", "")
+	w.sessions["ses_b"] = session("ses_b", "")
+	w.forms["ses_a"] = 1
+	for id, want := range map[string]string{"ses_a": "Which DB?", "ses_b": ""} {
+		got, err := c.FirstQuestion(context.Background(), id)
+		if err != nil || got != want {
+			t.Fatalf("FirstQuestion(%s) = %q, %v; want %q", id, got, err, want)
+		}
+	}
+}
+
+func TestFirstQuestionSkipsNonQuestionAndFallsBackToTitle(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/session/ses_a/form", func(rw http.ResponseWriter, _ *http.Request) {
+		_, _ = rw.Write([]byte(`{"data":[{"title":"Other","metadata":{"kind":"auth"},"fields":[{"title":"nope"}]},{"title":"Pick one","metadata":{"kind":"question"},"fields":[]}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := &Client{BaseURL: srv.URL}
+	got, err := c.FirstQuestion(context.Background(), "ses_a")
+	if err != nil || got != "Pick one" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+func TestSnapshotCarriesQuestion(t *testing.T) {
+	w, c := newWorld(t)
+	w.sessions["ses_root"] = session("ses_root", "")
+	w.sessions["ses_kid"] = session("ses_kid", "ses_root")
+	w.forms["ses_kid"] = 1
+	snap, err := c.Snapshot(context.Background(), "ses_root", nil)
+	if err != nil || snap.Question != "Which DB?" || snap.Forms != 1 {
+		t.Fatalf("snap = %+v, err = %v", snap, err)
 	}
 }

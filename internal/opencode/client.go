@@ -162,6 +162,35 @@ func (c *Client) FormCount(ctx context.Context, id string) (int, error) {
 	return c.count(ctx, sessionPath(id)+"/form")
 }
 
+// FirstQuestion returns the text of the first pending question form of a
+// session, or "" when there is none.
+func (c *Client) FirstQuestion(ctx context.Context, id string) (string, error) {
+	var out struct {
+		Data []struct {
+			Title    string `json:"title"`
+			Metadata struct {
+				Kind string `json:"kind"`
+			} `json:"metadata"`
+			Fields []struct {
+				Title string `json:"title"`
+			} `json:"fields"`
+		} `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, sessionPath(id)+"/form", nil, &out); err != nil {
+		return "", err
+	}
+	for _, f := range out.Data {
+		if f.Metadata.Kind != "question" {
+			continue
+		}
+		if len(f.Fields) > 0 {
+			return f.Fields[0].Title, nil
+		}
+		return f.Title, nil
+	}
+	return "", nil
+}
+
 func (c *Client) PermissionCount(ctx context.Context, id string) (int, error) {
 	return c.count(ctx, sessionPath(id)+"/permission")
 }

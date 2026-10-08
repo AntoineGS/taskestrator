@@ -90,6 +90,12 @@ func (h CLI) call(ctx context.Context, out any, args ...string) error {
 	return json.Unmarshal(env.Result, out)
 }
 
+// Running reports whether the herdr server is up.
+func (h CLI) Running(ctx context.Context) bool {
+	data, err := h.exec(ctx, "status", "server")
+	return err == nil && strings.Contains(string(data), "status: running")
+}
+
 func within(path, root string) bool {
 	path = filepath.Clean(path)
 	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))

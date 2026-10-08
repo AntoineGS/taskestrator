@@ -31,6 +31,7 @@ type Snapshot struct {
 	Running     bool
 	Forms       int
 	Permissions int
+	Question    string
 }
 
 // Display is a derived state plus an optional detail, such as why a task is waiting.

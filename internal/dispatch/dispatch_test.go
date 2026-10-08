@@ -38,6 +38,9 @@ func (r *recorder) note(format string, args ...any) error {
 
 func (r *recorder) Ready(context.Context, string) ([]tracker.Task, error) { return nil, nil }
 func (r *recorder) List(context.Context, string) ([]tracker.Task, error)  { return nil, nil }
+func (r *recorder) Show(context.Context, string, string) (tracker.Task, error) {
+	return tracker.Task{}, nil
+}
 func (r *recorder) Claim(_ context.Context, _, id string) error {
 	return r.note("claim %s", id)
 }

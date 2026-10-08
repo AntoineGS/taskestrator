@@ -45,6 +45,7 @@ func (t Task) Meta(key string) string {
 type Tracker interface {
 	Ready(ctx context.Context, repo string) ([]Task, error)
 	List(ctx context.Context, repo string) ([]Task, error)
+	Show(ctx context.Context, repo, id string) (Task, error)
 	Claim(ctx context.Context, repo, id string) error
 	Unclaim(ctx context.Context, repo, id string) error
 	SetMetadata(ctx context.Context, repo, id string, kv map[string]string) error
@@ -65,6 +66,17 @@ func (b BD) Ready(ctx context.Context, repo string) ([]Task, error) {
 
 func (b BD) List(ctx context.Context, repo string) ([]Task, error) {
 	return b.tasks(ctx, repo, "list", "--json", "--all", "-n", "0")
+}
+
+func (b BD) Show(ctx context.Context, repo, id string) (Task, error) {
+	tasks, err := b.tasks(ctx, repo, "show", id, "--json")
+	if err != nil {
+		return Task{}, err
+	}
+	if len(tasks) == 0 {
+		return Task{}, fmt.Errorf("bd show %s: not found", id)
+	}
+	return tasks[0], nil
 }
 
 func (b BD) tasks(ctx context.Context, repo string, args ...string) ([]Task, error) {

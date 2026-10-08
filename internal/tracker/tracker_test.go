@@ -111,3 +111,28 @@ func TestErrorsPropagate(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestShow(t *testing.T) {
+	f := &fakeRun{
+		out: map[string]string{
+			"show se-1 --json": `[{"id":"se-1","title":"One","status":"open","metadata":{"tsk.session":"ses_a"}}]`,
+			"show se-9 --json": `[]`,
+			"show bad --json":  `{`,
+		},
+		err: map[string]error{"show boom --json": errors.New("bd down")},
+	}
+	bd := newBD(f)
+	task, err := bd.Show(context.Background(), "/r", "se-1")
+	if err != nil || task.ID != "se-1" || task.Meta("tsk.session") != "ses_a" || f.dirs[0] != "/r" {
+		t.Fatalf("task = %+v, err = %v, dirs = %v", task, err, f.dirs)
+	}
+	if _, err := bd.Show(context.Background(), "/r", "se-9"); err == nil || err.Error() != "bd show se-9: not found" {
+		t.Fatalf("empty array err = %v", err)
+	}
+	if _, err := bd.Show(context.Background(), "/r", "bad"); err == nil || !strings.Contains(err.Error(), "unexpected output") {
+		t.Fatalf("bad json err = %v", err)
+	}
+	if _, err := bd.Show(context.Background(), "/r", "boom"); err == nil || !strings.Contains(err.Error(), "bd down") {
+		t.Fatalf("run err = %v", err)
+	}
+}

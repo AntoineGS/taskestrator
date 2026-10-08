@@ -136,3 +136,31 @@ func TestErrorEnvelopeOnCommandFailure(t *testing.T) {
 		t.Fatalf("Focus err does not wrap original error")
 	}
 }
+
+func TestRunning(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want bool
+	}{
+		{"running", "status: running\npid: 1\n", nil, true},
+		{"stopped", "status: stopped\n", nil, false},
+		{"exit error", "status: running\n", errors.New("exit 1"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			h := CLI{Exec: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				got = args
+				return []byte(tc.out), tc.err
+			}}
+			if h.Running(context.Background()) != tc.want {
+				t.Fatalf("Running = %v, want %v", !tc.want, tc.want)
+			}
+			if strings.Join(got, " ") != "status server" {
+				t.Fatalf("args = %v", got)
+			}
+		})
+	}
+}

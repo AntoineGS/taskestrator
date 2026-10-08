@@ -119,6 +119,9 @@ func (f *fakeTracker) List(_ context.Context, repo string) ([]tracker.Task, erro
 	f.lists[repo]++
 	return f.tasks[repo], nil
 }
+func (f *fakeTracker) Show(context.Context, string, string) (tracker.Task, error) {
+	return tracker.Task{}, nil
+}
 func (f *fakeTracker) Claim(context.Context, string, string) error   { return nil }
 func (f *fakeTracker) Unclaim(context.Context, string, string) error { return nil }
 func (f *fakeTracker) SetMetadata(context.Context, string, string, map[string]string) error {

@@ -37,6 +37,13 @@ func (c *Client) Snapshot(ctx context.Context, id string, active map[string]bool
 			return status.Snapshot{}, err
 		}
 		snap.Forms += forms
+		if forms > 0 && snap.Question == "" {
+			q, err := c.FirstQuestion(ctx, cur)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return status.Snapshot{}, err
+			}
+			snap.Question = q
+		}
 		perms, err := c.PermissionCount(ctx, cur)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return status.Snapshot{}, err
