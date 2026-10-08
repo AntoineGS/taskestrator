@@ -326,3 +326,47 @@ func TestJumpLostRefused(t *testing.T) {
 		t.Fatalf("must not touch herdr: %v", h.r.calls())
 	}
 }
+
+func TestDispatchSentRaceDuringChecks(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.readyGate = make(chan struct{})
+	h.r.readyEntered = make(chan struct{}, 1)
+	bDone := make(chan error, 1)
+	go func() { _, err := invoke(h, "dispatch", "a"); bDone <- err }()
+	<-h.r.readyEntered // B has passed its early checks and sits in Ready
+
+	if _, err := invoke(h, "dispatch", "a"); err != nil { // A completes
+		t.Fatal(err)
+	}
+	close(h.r.readyGate)
+	re := wantFail(t, <-bDone, "busy")
+	if !strings.Contains(re.Message, "just dispatched") {
+		t.Fatalf("message = %q", re.Message)
+	}
+	claims := 0
+	for _, c := range h.r.calls() {
+		if c == "claim a" {
+			claims++
+		}
+	}
+	if claims != 1 || len(h.dispatched) != 1 {
+		t.Fatalf("dispatch ran %d times (OnDispatched %d)", claims, len(h.dispatched))
+	}
+}
+
+func TestSentPrunedOnInvoke(t *testing.T) {
+	h := lostHarness(t)
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	h.a.Engine.Sync(nil, lostEnv()) // bead gone
+	if _, err := invoke(h, "jump", "zz"); err == nil {
+		t.Fatal("want error")
+	}
+	h.a.mu.Lock()
+	n := len(h.a.sent)
+	h.a.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("stale sent entries kept: %d", n)
+	}
+}

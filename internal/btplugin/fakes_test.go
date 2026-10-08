@@ -26,6 +26,10 @@ type recorder struct {
 	hasWS     bool
 	block     chan struct{} // when set, claim waits on it
 	entered   chan struct{} // signalled when claim starts
+
+	readyGate    chan struct{} // when set, the first Ready call waits on it
+	readyEntered chan struct{} // signalled when that first Ready call starts
+	readyCalls   int
 }
 
 func (r *recorder) note(format string, args ...any) error {
@@ -46,6 +50,14 @@ func (r *recorder) calls() []string {
 }
 
 func (r *recorder) Ready(context.Context, string) ([]tracker.Task, error) {
+	r.mu.Lock()
+	r.readyCalls++
+	first := r.readyCalls == 1 && r.readyGate != nil
+	r.mu.Unlock()
+	if first {
+		r.readyEntered <- struct{}{}
+		<-r.readyGate
+	}
 	var out []tracker.Task
 	for _, id := range r.ready {
 		out = append(out, tracker.Task{ID: id})

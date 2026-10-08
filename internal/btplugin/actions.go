@@ -45,6 +45,7 @@ const sentTTL = 2 * time.Minute
 
 // Invoke runs one action. Refusals are returned as Fail errors.
 func (a *Actions) Invoke(ctx context.Context, p InvokeParams) (InvokeResult, error) {
+	a.prune()
 	switch p.Action {
 	case "dispatch":
 		return a.dispatch(ctx, BeadKey{DB: p.Bead.DB, ID: p.Bead.ID})
@@ -58,19 +59,6 @@ func (a *Actions) herdrUp() bool {
 	return a.Herdr != nil && a.HerdrUp != nil && a.HerdrUp()
 }
 
-func (a *Actions) acquire(k BeadKey) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.inflight[k] {
-		return false
-	}
-	if a.inflight == nil {
-		a.inflight = map[BeadKey]bool{}
-	}
-	a.inflight[k] = true
-	return true
-}
-
 func (a *Actions) clock() time.Time {
 	if a.now != nil {
 		return a.now()
@@ -78,35 +66,72 @@ func (a *Actions) clock() time.Time {
 	return time.Now()
 }
 
-// justSent reports whether k was dispatched and the engine has not caught up,
-// pruning the entry once it has.
-func (a *Actions) justSent(k BeadKey, b Bead) bool {
+// stale reports whether a sent entry no longer holds: it expired, or the
+// engine has caught up with the dispatch (new session, closed or gone bead).
+// The caller holds a.mu.
+func (a *Actions) stale(k BeadKey, e sentEntry) bool {
+	if a.clock().Sub(e.at) >= sentTTL {
+		return true
+	}
+	b, ok := a.Engine.Bead(k)
+	return !ok || b.Status == "closed" || metaString(b, tracker.MetaSession) != e.was
+}
+
+func (a *Actions) prune() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k, e := range a.sent {
+		if a.stale(k, e) {
+			delete(a.sent, k)
+		}
+	}
+}
+
+func (a *Actions) justSent(k BeadKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	e, ok := a.sent[k]
-	if !ok {
-		return false
-	}
-	if a.clock().Sub(e.at) >= sentTTL || metaString(b, tracker.MetaSession) != e.was || b.Status == "closed" {
-		delete(a.sent, k)
-		return false
-	}
-	return true
+	return ok && !a.stale(k, e)
 }
 
-func (a *Actions) markSent(k BeadKey, was string) {
+var errJustSent = func(id string) *RPCError {
+	return Fail("busy", id+" was just dispatched; waiting for bt to refresh")
+}
+
+// acquire takes the in-flight mark unless k is in flight or was just
+// dispatched; both checks and the mark are one atomic step.
+func (a *Actions) acquire(k BeadKey) *RPCError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.inflight[k] {
+		return Fail("busy", k.ID+" is already being dispatched")
+	}
+	if e, ok := a.sent[k]; ok {
+		if !a.stale(k, e) {
+			return errJustSent(k.ID)
+		}
+		delete(a.sent, k)
+	}
+	if a.inflight == nil {
+		a.inflight = map[BeadKey]bool{}
+	}
+	a.inflight[k] = true
+	return nil
+}
+
+// finish releases the in-flight mark; a successful dispatch records its sent
+// entry in the same step, so no caller can slip between release and record.
+func (a *Actions) finish(k BeadKey, sent bool, was string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.inflight, k)
+	if !sent {
+		return
+	}
 	if a.sent == nil {
 		a.sent = map[BeadKey]sentEntry{}
 	}
 	a.sent[k] = sentEntry{was: was, at: a.clock()}
-}
-
-func (a *Actions) release(k BeadKey) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.inflight, k)
 }
 
 func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error) {
@@ -118,8 +143,8 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if d.State != status.Queued && d.State != status.Lost {
 		return InvokeResult{}, Fail("not_dispatchable", fmt.Sprintf("%s is %s", k.ID, d.State))
 	}
-	if a.justSent(k, b) {
-		return InvokeResult{}, Fail("busy", k.ID+" was just dispatched; waiting for bt to refresh")
+	if a.justSent(k) {
+		return InvokeResult{}, errJustSent(k.ID)
 	}
 	repo := a.RepoFor(b)
 	if repo == "" {
@@ -157,10 +182,11 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if !ignored {
 		return InvokeResult{}, Fail("worktrees_not_ignored", ".worktrees/ is not git-ignored in this repo; add it to .gitignore first")
 	}
-	if !a.acquire(k) {
-		return InvokeResult{}, Fail("busy", k.ID+" is already being dispatched")
+	if busy := a.acquire(k); busy != nil {
+		return InvokeResult{}, busy
 	}
-	defer a.release(k)
+	sent := false
+	defer func() { a.finish(k, sent, metaString(b, tracker.MetaSession)) }()
 
 	task, err := a.Tracker.Show(ctx, repo, k.ID)
 	if err != nil {
@@ -180,7 +206,7 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if err != nil {
 		return InvokeResult{}, Fail("dispatch_failed", strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
-	a.markSent(k, metaString(b, tracker.MetaSession))
+	sent = true
 	msg := fmt.Sprintf("Dispatched %s (session %s)", k.ID, res.SessionID)
 	if res.TabError != nil {
 		msg += "; tab not opened: " + res.TabError.Error()
