@@ -70,6 +70,7 @@ func (r *recorder) RemoveWorktree(_ context.Context, _, path, _ string, deleteBr
 	return r.note("removeworktree %s %v", path, deleteBranch)
 }
 func (r *recorder) IsIgnored(context.Context, string, string) (bool, error) { return true, nil }
+func (r *recorder) Ignore(context.Context, string, string) error            { return nil }
 
 func (r *recorder) CreateSession(_ context.Context, in opencode.CreateSession) (opencode.Session, error) {
 	r.model = in.Model

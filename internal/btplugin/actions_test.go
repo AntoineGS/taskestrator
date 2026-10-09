@@ -88,8 +88,8 @@ func TestDispatchRefusals(t *testing.T) {
 		{"lost blocked", "a", []Bead{blocked(mkBead("a", "in_progress", "s"))}, func(h *actionsHarness) {
 			h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, Env{HerdrUp: true, RepoFor: func(Bead) string { return "/repo" }})
 		}, "not_ready", "a is blocked"},
-		{"no review status", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.noReview = true }, "no_review_status", `bd config set status.custom "review:wip"`},
-		{"worktrees not ignored", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.unignored = true }, "worktrees_not_ignored", ""},
+		{"no review status", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.noReview = true }, "needs_setup", `bd config set status.custom "review:wip"`},
+		{"worktrees not ignored", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.unignored = true }, "needs_setup", "add .worktrees/ to .gitignore"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestDispatchFailed(t *testing.T) {
 	wantFail(t, err, "dispatch_failed")
 }
 
-// confirmWith makes h answer review prompts with ok and err, recording each
+// confirmWith makes h answer setup prompts with ok and err, recording each
 // prompt.
 func confirmWith(h *actionsHarness, ok bool, err error) *[]ConfirmParams {
 	var asked []ConfirmParams
@@ -195,23 +195,64 @@ func confirmWith(h *actionsHarness, ok bool, err error) *[]ConfirmParams {
 	return &asked
 }
 
-func TestDispatchAddsReviewStatusWhenConfirmed(t *testing.T) {
-	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
-	h.r.noReview = true
-	asked := confirmWith(h, true, nil)
-	if _, err := invoke(h, "dispatch", "a"); err != nil {
-		t.Fatal(err)
+const (
+	stepIgnore = "add .worktrees/ to .gitignore"
+	stepReview = "add the review status"
+)
+
+func TestDispatchSetsUpWhenConfirmed(t *testing.T) {
+	tests := []struct {
+		name      string
+		unignored bool
+		noReview  bool
+		steps     []string // listed in the prompt, in order
+		calls     []string // setup calls before the claim
+	}{
+		{"both", true, true, []string{stepIgnore, stepReview}, []string{"ignore .worktrees/", "addreviewstatus"}},
+		{"gitignore only", true, false, []string{stepIgnore}, []string{"ignore .worktrees/"}},
+		{"review only", false, true, []string{stepReview}, []string{"addreviewstatus"}},
 	}
-	if len(*asked) != 1 || !strings.Contains((*asked)[0].Message, "db") {
-		t.Fatalf("prompts = %+v", *asked)
-	}
-	got := h.r.calls()
-	if len(got) < 2 || got[0] != "addreviewstatus" || got[1] != "claim a" {
-		t.Fatalf("log = %v", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+			h.r.unignored, h.r.noReview = tt.unignored, tt.noReview
+			asked := confirmWith(h, true, nil)
+			if _, err := invoke(h, "dispatch", "a"); err != nil {
+				t.Fatal(err)
+			}
+			if len(*asked) != 1 {
+				t.Fatalf("prompts = %+v", *asked)
+			}
+			msg := (*asked)[0].Message
+			if !strings.Contains((*asked)[0].Title, "db") {
+				t.Fatalf("title = %q", (*asked)[0].Title)
+			}
+			for _, s := range []string{stepIgnore, stepReview} {
+				if strings.Contains(msg, s) != slices.Contains(tt.steps, s) {
+					t.Fatalf("message %q: step %q listed=%v, want %v", msg, s, strings.Contains(msg, s), slices.Contains(tt.steps, s))
+				}
+			}
+			got := h.r.calls()
+			want := append(tt.calls, "claim a")
+			if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
+				t.Fatalf("log = %v, want prefix %v", got, want)
+			}
+		})
 	}
 }
 
-func TestDispatchReviewStatusNotAdded(t *testing.T) {
+func TestDispatchNoPromptWhenSetUp(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	asked := confirmWith(h, false, nil)
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 0 {
+		t.Fatalf("asked: %+v", *asked)
+	}
+}
+
+func TestDispatchSetupDeclined(t *testing.T) {
 	tests := []struct {
 		name string
 		ok   bool
@@ -223,12 +264,14 @@ func TestDispatchReviewStatusNotAdded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
-			h.r.noReview = true
+			h.r.unignored, h.r.noReview = true, true
 			confirmWith(h, tt.ok, tt.err)
 			_, err := invoke(h, "dispatch", "a")
-			re := wantFail(t, err, "no_review_status")
-			if !strings.Contains(re.Message, `bd config set status.custom "review:wip"`) {
-				t.Fatalf("message = %q", re.Message)
+			re := wantFail(t, err, "needs_setup")
+			for _, s := range []string{stepIgnore, `bd config set status.custom "review:wip"`} {
+				if !strings.Contains(re.Message, s) {
+					t.Fatalf("message %q lacks %q", re.Message, s)
+				}
 			}
 			if len(h.r.calls()) != 0 {
 				t.Fatalf("must not change anything: %v", h.r.calls())
@@ -237,27 +280,27 @@ func TestDispatchReviewStatusNotAdded(t *testing.T) {
 	}
 }
 
-func TestDispatchReviewStatusAddFails(t *testing.T) {
-	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
-	h.r.noReview = true
-	h.r.failOn = "addreviewstatus"
-	confirmWith(h, true, nil)
-	_, err := invoke(h, "dispatch", "a")
-	wantFail(t, err, "check_failed")
-	if slices.Contains(h.r.calls(), "claim a") {
-		t.Fatalf("dispatched anyway: %v", h.r.calls())
+func TestDispatchSetupStepFails(t *testing.T) {
+	tests := []struct {
+		name  string
+		tweak func(r *recorder)
+	}{
+		{"gitignore write", func(r *recorder) { r.failOn = "ignore" }},
+		{"gitignore has no effect", func(r *recorder) { r.ignoreNoEffect = true }},
+		{"review status", func(r *recorder) { r.failOn = "addreviewstatus" }},
 	}
-}
-
-func TestDispatchChecksWorktreesBeforeAsking(t *testing.T) {
-	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
-	h.r.noReview = true
-	h.r.unignored = true
-	asked := confirmWith(h, true, nil)
-	_, err := invoke(h, "dispatch", "a")
-	wantFail(t, err, "worktrees_not_ignored")
-	if len(*asked) != 0 {
-		t.Fatalf("asked before refusing: %+v", *asked)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+			h.r.unignored, h.r.noReview = true, true
+			tt.tweak(h.r)
+			confirmWith(h, true, nil)
+			_, err := invoke(h, "dispatch", "a")
+			wantFail(t, err, "check_failed")
+			if slices.Contains(h.r.calls(), "claim a") {
+				t.Fatalf("dispatched anyway: %v", h.r.calls())
+			}
+		})
 	}
 }
 

@@ -82,11 +82,10 @@ failures to stderr):
 | cannot tell which checkout `<id>` belongs to; add its parent to roots | `no_repo` | the task's checkout is unknown, so its tab cannot be found |
 | herdr is not running | `no_herdr` | start herdr |
 | `<id>` is blocked | `not_ready` | bt reports open blockers (status `blocked`, or an open `blocks` dependency) |
-| this project has no review status; run: … | `no_review_status` | the project lacks the `review` status and you declined to add it |
-| .worktrees/ is not git-ignored in this repo; … | `worktrees_not_ignored` | add `.worktrees/` to `.gitignore` |
+| `<db>` is not set up for dispatch; … | `needs_setup` | you declined the setup prompt; the message lists the steps to do by hand |
 | `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
 | `<id>` is `<state>` | `not_dispatchable` | the task is not queued or lost |
-| (the `bd` or `git` error) | `check_failed` | a pre-dispatch check failed |
+| (the `bd` or `git` error) | `check_failed` | a pre-dispatch check or setup step failed |
 | (the failing step) | `dispatch_failed` | a dispatch step failed; earlier steps are undone |
 | `<id>` has not been dispatched | `not_dispatched` | the task has no agent session to jump to |
 | `<id>`'s agent session is gone; press D … | `session_lost` | dispatch the task again |
@@ -97,10 +96,17 @@ cloned after bt started is found after bt restarts.
 
 ### Per-project setup
 
-Each project needs the `review` status once. When it is missing, dispatching
-asks whether to add `review:wip` to the project's bd config; you can also run
-`bd config set status.custom "review:wip"` yourself. `.worktrees/` must be
-git-ignored.
+Each project needs two things before its first dispatch: `.worktrees/` must be
+git-ignored, and the project needs the `review` status. When either is
+missing, `D` shows one prompt listing what tsk will do; "Set up" does it and
+continues the dispatch:
+
+- appends `.worktrees/` to `.gitignore` (creating it if needed). tsk does not
+  commit this change.
+- runs the equivalent of `bd config set status.custom "review:wip"`, keeping
+  any custom statuses already set.
+
+You can also do both by hand.
 
 An optional `.tsk.toml` in the repository:
 

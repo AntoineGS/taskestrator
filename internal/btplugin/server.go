@@ -501,7 +501,7 @@ func reviewWarning(dbs []string) string {
 	if len(dbs) == 1 {
 		subject = "1 project lacks"
 	}
-	return fmt.Sprintf(`%s the "review" status (%s); dispatching offers to add it`, subject, list)
+	return fmt.Sprintf(`%s the "review" status (%s); your first dispatch there will ask to set it up`, subject, list)
 }
 
 // onUpdate is the Loop.Update callback.

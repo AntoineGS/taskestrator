@@ -21,10 +21,13 @@ type recorder struct {
 	failOn    string
 	noReview  bool
 	unignored bool
-	panes     map[string]string
-	hasWS     bool
-	block     chan struct{} // when set, claim waits on it
-	entered   chan struct{} // signalled when claim starts
+	// ignoreNoEffect keeps .worktrees/ unignored after Ignore, as a negation
+	// rule later in .gitignore would.
+	ignoreNoEffect bool
+	panes          map[string]string
+	hasWS          bool
+	block          chan struct{} // when set, claim waits on it
+	entered        chan struct{} // signalled when claim starts
 
 	readyCalls int
 
@@ -105,7 +108,20 @@ func (r *recorder) RemoveWorktree(_ context.Context, _, path, _ string, deleteBr
 	return r.note("removeworktree %s %v", path, deleteBranch)
 }
 func (r *recorder) IsIgnored(context.Context, string, string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return !r.unignored, nil
+}
+func (r *recorder) Ignore(_ context.Context, _, pattern string) error {
+	if err := r.note("ignore %s", pattern); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.ignoreNoEffect {
+		r.unignored = false
+	}
+	return nil
 }
 
 func (r *recorder) CreateSession(_ context.Context, in opencode.CreateSession) (opencode.Session, error) {

@@ -107,6 +107,44 @@ func TestRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestIgnore(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing *string // nil: no .gitignore
+		want     string
+	}{
+		{"no file", nil, ".worktrees/\n"},
+		{"empty file", ptr(""), ".worktrees/\n"},
+		{"trailing newline", ptr("bin/\n"), "bin/\n.worktrees/\n"},
+		{"no trailing newline", ptr("bin/"), "bin/\n.worktrees/\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			git(t, repo, "init", "-q", "-b", "main")
+			path := filepath.Join(repo, ".gitignore")
+			if tt.existing != nil {
+				if err := os.WriteFile(path, []byte(*tt.existing), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			g := New()
+			if err := g.Ignore(context.Background(), repo, ".worktrees/"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != tt.want {
+				t.Fatalf(".gitignore = %q, %v; want %q", got, err, tt.want)
+			}
+			if ok, err := g.IsIgnored(context.Background(), repo, ".worktrees/tsk-check"); err != nil || !ok {
+				t.Fatalf("ignored after Ignore: %v, %v", ok, err)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
+
 func TestIsIgnored(t *testing.T) {
 	repo := newRepo(t)
 	g := New()

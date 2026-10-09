@@ -2,6 +2,7 @@ package btplugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -173,36 +174,89 @@ func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	a.sent[k] = sentEntry{was: was, at: a.clock()}
 }
 
-// ensureReviewStatus makes sure the project has the review status agents set
-// when they finish, adding it to the project's bd config only when the user
-// agrees in bt.
-func (a *Actions) ensureReviewStatus(ctx context.Context, db, repo string) error {
-	has, err := a.Tracker.HasReviewStatus(ctx, repo)
+// worktreeCheck is a path inside .worktrees/ used to test the ignore rule.
+const worktreeCheck = ".worktrees/tsk-check"
+
+// setupStep is one piece of project setup dispatch needs.
+type setupStep struct {
+	prompt string // shown in the setup prompt
+	manual string // how to do it by hand, for the refusal
+	run    func(ctx context.Context) error
+}
+
+// setUpProject makes sure the project is ready for dispatch: .worktrees/ is
+// git-ignored and the project has the review status agents set when they
+// finish. Missing steps are listed in one prompt in bt and done only when the
+// user agrees; the .gitignore change is not committed.
+func (a *Actions) setUpProject(ctx context.Context, db, repo string) error {
+	ignored, err := a.Git.IsIgnored(ctx, repo, worktreeCheck)
 	if err != nil {
 		return Fail("check_failed", err.Error())
 	}
-	if has {
+	hasReview, err := a.Tracker.HasReviewStatus(ctx, repo)
+	if err != nil {
+		return Fail("check_failed", err.Error())
+	}
+	var steps []setupStep
+	if !ignored {
+		steps = append(steps, setupStep{
+			prompt: "add .worktrees/ to .gitignore (left uncommitted)",
+			manual: "add .worktrees/ to .gitignore",
+			run: func(ctx context.Context) error {
+				if err := a.Git.Ignore(ctx, repo, ".worktrees/"); err != nil {
+					return fmt.Errorf("update .gitignore: %w", err)
+				}
+				ok, err := a.Git.IsIgnored(ctx, repo, worktreeCheck)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return errors.New(".worktrees/ is still not git-ignored after updating .gitignore; check it for a rule that re-includes it")
+				}
+				return nil
+			},
+		})
+	}
+	if !hasReview {
+		steps = append(steps, setupStep{
+			prompt: "add the review status (review:wip) to its bd config",
+			manual: `run: bd config set status.custom "review:wip"`,
+			run: func(ctx context.Context) error {
+				if err := a.Tracker.AddReviewStatus(ctx, repo); err != nil {
+					return fmt.Errorf("add review status: %w", err)
+				}
+				return nil
+			},
+		})
+	}
+	if len(steps) == 0 {
 		return nil
 	}
-	refused := Fail("no_review_status", `this project has no review status; run: bd config set status.custom "review:wip"`)
+	prompts, manual := make([]string, len(steps)), make([]string, len(steps))
+	for i, s := range steps {
+		prompts[i], manual[i] = "- "+s.prompt, s.manual
+	}
+	refused := Fail("needs_setup", fmt.Sprintf("%s is not set up for dispatch; %s", db, strings.Join(manual, "; ")))
 	if a.Confirm == nil {
 		return refused
 	}
 	ok, err := a.Confirm(ctx, ConfirmParams{
-		Title:   "Add the review status?",
-		Message: fmt.Sprintf(`%s has no "review" status, which agents set when they finish. Add review:wip to its bd config?`, db),
-		Confirm: "Add",
+		Title:   "Set up " + db + " for dispatch?",
+		Message: "tsk needs to:\n" + strings.Join(prompts, "\n"),
+		Confirm: "Set up",
 		Cancel:  "Cancel",
 	})
 	if err != nil {
-		logger.Printf("review status prompt for %s: %v", db, err)
+		logger.Printf("setup prompt for %s: %v", db, err)
 		return refused
 	}
 	if !ok {
 		return refused
 	}
-	if err := a.Tracker.AddReviewStatus(ctx, repo); err != nil {
-		return Fail("check_failed", "add review status: "+err.Error())
+	for _, s := range steps {
+		if err := s.run(ctx); err != nil {
+			return Fail("check_failed", err.Error())
+		}
 	}
 	return nil
 }
@@ -229,15 +283,8 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if b.Blocked {
 		return InvokeResult{}, Fail("not_ready", k.ID+" is blocked")
 	}
-	ignored, err := a.Git.IsIgnored(ctx, repo, ".worktrees/tsk-check")
-	if err != nil {
-		return InvokeResult{}, Fail("check_failed", err.Error())
-	}
-	if !ignored {
-		return InvokeResult{}, Fail("worktrees_not_ignored", ".worktrees/ is not git-ignored in this repo; add it to .gitignore first")
-	}
-	// The review check is the last gate because it may prompt the user.
-	if err := a.ensureReviewStatus(ctx, k.DB, repo); err != nil {
+	// Setup is the last gate because it may prompt the user.
+	if err := a.setUpProject(ctx, k.DB, repo); err != nil {
 		return InvokeResult{}, err
 	}
 	if busy := a.acquire(k); busy != nil {
