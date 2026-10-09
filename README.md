@@ -106,7 +106,7 @@ failures to stderr):
 | `<id>` is blocked | `not_ready` | bt reports open blockers (status `blocked`, or an open `blocks` dependency) |
 | this project has no review status; run: … | `no_review_status` | the project lacks the `review` status and you declined to add it |
 | .worktrees/ is not git-ignored in this repo; … | `worktrees_not_ignored` | add `.worktrees/` to `.gitignore` |
-| `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
+| `<id>` is already being dispatched / was just dispatched (or linked); … | `busy` | wait for bt to refresh |
 | `<id>` is `<state>` | `not_dispatchable` | the task is not queued or lost |
 | (the `bd` or `git` error) | `check_failed` | a pre-dispatch check failed |
 | (the failing step) | `dispatch_failed` | a dispatch step failed; earlier steps are undone |

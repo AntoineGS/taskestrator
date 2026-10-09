@@ -84,21 +84,24 @@ tsk link --session <id> [--workdir <dir>] --command <command>
   relative, it is joined to it. The command is parsed once before connecting,
   so a command with no claim exits 0 without contacting OpenCode.
 - Splits the command into segments on `&&`, `||`, `;`, `|` and newlines,
-  outside single quotes, double quotes and backslash escapes.
+  outside single quotes, double quotes and backslash escapes. Comments and
+  heredoc bodies are skipped, so a command quoted in a note or a file being
+  written is not a claim.
 - A segment `cd <path>` changes the directory used for the segments after it
   (relative paths resolve against the current one).
 - A segment is a claim when, after leading `NAME=value` assignments, its
   command's base name is `bd`, its first word that does not start with `-` is
   `update`, and it contains `--claim`, `--status in_progress`,
   `--status=in_progress` or `-s in_progress`.
-- bd's global flags before `update` are understood: `-C`/`--directory`
-  changes the segment's directory like `cd`; the values of `--actor`,
-  `--dolt-auto-commit` and `--mem-profile` are skipped; a segment with `--db`,
+- Flags may come before or after `update`. Every flag except bd's boolean
+  ones (`--claim`, `--force`, `--json`, `--quiet`, ...) consumes the next word
+  unless written `--flag=value`, so flag values are never taken for IDs or
+  for `--claim` (`--parent tsk-epic` does not link the epic). `-C`/`--directory`
+  changes the segment's directory like `cd`; a segment with `--db`,
   `--database` or `--global` targets another database and is ignored (the
   manual action covers it).
-- Candidate IDs are the words after `update` that do not start with `-` and
-  match `^[A-Za-z0-9][A-Za-z0-9_]*-[A-Za-z0-9._]+$`. A flag value that looks like
-  an ID is harmless: step 2 of the link rule does not find it.
+- Candidate IDs are the other words after `update` that match
+  `^[A-Za-z0-9][A-Za-z0-9_]*-[A-Za-z0-9._]+$`.
 - Each candidate goes through the link rule in its segment's directory, once
   per (directory, ID).
 - Writes one line per decision to `~/.local/state/tsk/link.log`

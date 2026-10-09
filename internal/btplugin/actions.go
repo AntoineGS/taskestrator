@@ -44,10 +44,12 @@ type Actions struct {
 	now      func() time.Time // time.Now when nil
 }
 
-// sentEntry records a finished dispatch until bt's sync shows it: was is the
-// session the bead had before, and a bead still showing it is not yet updated.
+// sentEntry records a finished dispatch or link until bt's sync shows it: was
+// is the session the bead had before, and a bead still showing it is not yet
+// updated. did is "dispatched" or "linked".
 type sentEntry struct {
 	was string
+	did string
 	at  time.Time
 }
 
@@ -132,20 +134,23 @@ func (a *Actions) prune() {
 	}
 }
 
-func (a *Actions) justSent(k BeadKey) bool {
+// justSent refuses k while its last dispatch or link is not yet in bt's sync.
+func (a *Actions) justSent(k BeadKey) *RPCError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	e, ok := a.sent[k]
-	return ok && !a.stale(k, e)
+	if e, ok := a.sent[k]; ok && !a.stale(k, e) {
+		return errJustSent(k.ID, e.did)
+	}
+	return nil
 }
 
-var errJustSent = func(id string) *RPCError {
-	return Fail("busy", id+" was just dispatched; waiting for bt to refresh")
+func errJustSent(id, did string) *RPCError {
+	return Fail("busy", id+" was just "+did+"; waiting for bt to refresh")
 }
 
 // acquire marks k as being doing ("dispatched" or "linked") unless an action
-// is in flight on k or k was just dispatched; both checks and the mark are
-// one atomic step.
+// is in flight on k or k was just dispatched or linked; both checks and the
+// mark are one atomic step.
 func (a *Actions) acquire(k BeadKey, doing string) *RPCError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -154,7 +159,7 @@ func (a *Actions) acquire(k BeadKey, doing string) *RPCError {
 	}
 	if e, ok := a.sent[k]; ok {
 		if !a.stale(k, e) {
-			return errJustSent(k.ID)
+			return errJustSent(k.ID, e.did)
 		}
 		delete(a.sent, k)
 	}
@@ -165,11 +170,13 @@ func (a *Actions) acquire(k BeadKey, doing string) *RPCError {
 	return nil
 }
 
-// finish releases the in-flight mark; a successful dispatch records its sent
-// entry in the same step, so no caller can slip between release and record.
+// finish releases the in-flight mark; a successful dispatch or link records
+// its sent entry in the same step, so no caller can slip between release and
+// record.
 func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	did := a.inflight[k]
 	delete(a.inflight, k)
 	if !sent {
 		return
@@ -177,7 +184,7 @@ func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	if a.sent == nil {
 		a.sent = map[BeadKey]sentEntry{}
 	}
-	a.sent[k] = sentEntry{was: was, at: a.clock()}
+	a.sent[k] = sentEntry{was: was, did: did, at: a.clock()}
 }
 
 // ensureReviewStatus makes sure the project has the review status agents set
@@ -223,8 +230,8 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if d.State != status.Queued && d.State != status.Lost {
 		return InvokeResult{}, Fail("not_dispatchable", fmt.Sprintf("%s is %s", k.ID, d.State))
 	}
-	if a.justSent(k) {
-		return InvokeResult{}, errJustSent(k.ID)
+	if busy := a.justSent(k); busy != nil {
+		return InvokeResult{}, busy
 	}
 	repo := a.RepoFor(b)
 	if repo == "" {
@@ -348,7 +355,8 @@ func (a *Actions) linkSession(ctx context.Context, k BeadKey) (InvokeResult, err
 	if busy := a.acquire(k, "linked"); busy != nil {
 		return InvokeResult{}, busy
 	}
-	defer a.finish(k, false, "")
+	linked := false
+	defer func() { a.finish(k, linked, metaString(b, tracker.MetaSession)) }()
 
 	lk, err := a.Linker()
 	if err != nil {
@@ -377,6 +385,8 @@ func (a *Actions) linkSession(ctx context.Context, k BeadKey) (InvokeResult, err
 	if out.Result != link.Linked && out.Result != link.Same {
 		return InvokeResult{}, Fail("not_linkable", k.ID+": "+refusal(out.Result))
 	}
+	// Same leaves the bead as bt already shows it, so there is nothing to wait for.
+	linked = out.Result == link.Linked
 	if a.OnDispatched != nil {
 		a.OnDispatched(out.Root)
 	}

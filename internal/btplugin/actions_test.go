@@ -602,6 +602,26 @@ func TestLinkLostBead(t *testing.T) {
 	}
 }
 
+func TestLinkBlocksDispatchUntilSync(t *testing.T) {
+	h, _, _ := newLinkActions(t, mkBead("a", "in_progress", "s"))
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, envOK())
+	if _, err := invoke(h, "link", "a"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := invoke(h, "dispatch", "a")
+	if re := wantFail(t, err, "busy"); re.Message != "a was just linked; waiting for bt to refresh" {
+		t.Fatalf("message = %q", re.Message)
+	}
+	if len(h.r.calls()) != 1 { // only the agents listing from the link
+		t.Fatalf("dispatch ran: %v", h.r.calls())
+	}
+	// bt syncs the link: the guard lets go.
+	h.a.Engine.Sync([]Bead{mkBead("a", "in_progress", "ses_a")}, envOK())
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"ses_a": {Exists: true}}, true, envOK())
+	_, err = invoke(h, "link", "a")
+	wantFail(t, err, "not_linkable")
+}
+
 func TestLinkDismissedOrPromptFails(t *testing.T) {
 	for name, sel := range map[string]func(context.Context, SelectParams) (string, error){
 		"dismissed":    func(context.Context, SelectParams) (string, error) { return "", nil },
