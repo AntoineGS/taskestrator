@@ -19,7 +19,7 @@ func (f *fakeRun) run(_ context.Context, dir string, args ...string) ([]byte, er
 	f.calls = append(f.calls, k)
 	f.dirs = append(f.dirs, dir)
 	if e := f.err[k]; e != nil {
-		return nil, e
+		return []byte(f.out[k]), e
 	}
 	return []byte(f.out[k]), nil
 }
@@ -134,5 +134,30 @@ func TestShow(t *testing.T) {
 	}
 	if _, err := bd.Show(context.Background(), "/r", "boom"); err == nil || !strings.Contains(err.Error(), "bd down") {
 		t.Fatalf("run err = %v", err)
+	}
+}
+
+func TestShowNotFound(t *testing.T) {
+	k := "show tsk-zz --json"
+	f := &fakeRun{
+		out: map[string]string{k: `{"error":"no issues found matching the provided IDs","schema_version":1}`},
+		err: map[string]error{k: errors.New("exit status 1")},
+	}
+	_, err := newBD(f).Show(context.Background(), "/r", "tsk-zz")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	f = &fakeRun{out: map[string]string{"show tsk-zz --json": `[]`}}
+	if _, err := newBD(f).Show(context.Background(), "/r", "tsk-zz"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty array err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestShowOtherFailureIsNotNotFound(t *testing.T) {
+	k := "show tsk-zz --json"
+	f := &fakeRun{err: map[string]error{k: errors.New("no beads database found")}}
+	_, err := newBD(f).Show(context.Background(), "/r", "tsk-zz")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
 	}
 }

@@ -4,6 +4,7 @@ package tracker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -18,6 +19,9 @@ const (
 	MetaBranch   = "tsk.branch"
 	StatusReview = "review"
 )
+
+// ErrNotFound is returned (wrapped) by Show when bd has no such task.
+var ErrNotFound = errors.New("not found")
 
 // Task is a Beads issue as returned by bd --json.
 type Task struct {
@@ -69,14 +73,29 @@ func (b BD) List(ctx context.Context, repo string) ([]Task, error) {
 }
 
 func (b BD) Show(ctx context.Context, repo, id string) (Task, error) {
-	tasks, err := b.tasks(ctx, repo, "show", id, "--json")
+	out, err := b.Run(ctx, repo, "show", id, "--json")
 	if err != nil {
+		if notFound(out) {
+			return Task{}, fmt.Errorf("bd show %s: %w", id, ErrNotFound)
+		}
 		return Task{}, err
 	}
+	var tasks []Task
+	if err := json.Unmarshal(out, &tasks); err != nil {
+		return Task{}, fmt.Errorf("bd show: unexpected output: %w", err)
+	}
 	if len(tasks) == 0 {
-		return Task{}, fmt.Errorf("bd show %s: not found", id)
+		return Task{}, fmt.Errorf("bd show %s: %w", id, ErrNotFound)
 	}
 	return tasks[0], nil
+}
+
+// notFound reports bd's JSON answer for IDs it does not know.
+func notFound(out []byte) bool {
+	var v struct {
+		Error string `json:"error"`
+	}
+	return json.Unmarshal(out, &v) == nil && strings.Contains(v.Error, "no issues found")
 }
 
 func (b BD) tasks(ctx context.Context, repo string, args ...string) ([]Task, error) {
