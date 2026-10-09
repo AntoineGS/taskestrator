@@ -1,5 +1,8 @@
 # Plugin support: out-of-process plugins over JSON-RPC, built on in-process slots
 
+> Abandoned 2026-10-08: the plugin system stays in the fork
+> `AntoineGS/beadstui` and is not upstreamed. Kept for reference only.
+
 ## Purpose
 
 bt is a capable Beads TUI with a global, cross-project mode. I want a plugin

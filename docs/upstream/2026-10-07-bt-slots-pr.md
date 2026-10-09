@@ -1,5 +1,8 @@
 # feat(tui): slots registry for row badges, detail sections and BQL fields
 
+> Abandoned 2026-10-08: the plugin system stays in the fork
+> `AntoineGS/beadstui` and is not upstreamed. Kept for reference only.
+
 Part 1 of the plugin work proposed in #<issue>.
 
 ## What changed

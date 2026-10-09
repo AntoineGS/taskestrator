@@ -1,16 +1,17 @@
 # bt plugins, and tsk as the first plugin
 
 Date: 2026-10-07
-Status: draft, awaiting review
+Status: implemented in the fork (first local version); follow-ups in beadstui
+`bt-otb` and tsk `tsk-55e`, `tsk-kmz`
 
 ## Purpose
 
 beadstui (`bt`) is a capable Beads TUI with a global, cross-project mode. tsk
 needs a task-centric view with live agent state, one-key dispatch and jumping
 to the agent's terminal tab. Rebuilding bt's views inside tsk is not worth it.
-Instead, bt gains a generic plugin system, contributed upstream to
-`seanmartinsmith/beadstui`, and tsk becomes a headless plugin that supplies the
-agent features. tsk's own TUI is retired.
+Instead, bt gains a generic plugin system in the fork `AntoineGS/beadstui`,
+and tsk becomes a headless plugin that supplies the agent features. tsk's own
+TUI is retired.
 
 Success means:
 
@@ -29,7 +30,7 @@ Success means:
 
 | Topic | Decision |
 |---|---|
-| Delivery | Upstream PRs to `seanmartinsmith/beadstui`, preceded by an issue linking a trimmed copy of this spec. Developed on branches of the fork `AntoineGS/beadstui`. |
+| Delivery | Branches merged into the fork `AntoineGS/beadstui`. Not upstreamed (decided 2026-10-08; the earlier upstream plan and drafts in `docs/upstream/` are abandoned). |
 | Plugin model | Out-of-process executables speaking JSON-RPC 2.0 over stdio. Language-agnostic; a plugin crash cannot take bt down; plugin code is never linked into bt. |
 | Contributions | Data only. Plugins contribute badges, detail sections, BQL fields, swimlanes and actions; bt renders everything with its own theme. |
 | Extension seams | In-process Go registries ("slots") that bt's built-in features also use. The plugin host is one provider among others. |
@@ -373,22 +374,29 @@ Supports `--json`. bt also shows a one-time footer notice when a plugin fails.
 A TUI flag. It only changes how `dismiss` is handled, and is passed to plugins
 in `initialize`.
 
-### Delivery as PRs
+### Delivery
 
-0. An issue on `seanmartinsmith/beadstui` with a trimmed copy of this part,
-   asking for agreement on the approach and the menu key.
+The plugin system lives in the fork `AntoineGS/beadstui` only; it is not
+upstreamed (decided 2026-10-08). The work is split into these steps:
+
 1. **Slots.** `pkg/ui/slots`, the badge helper in all four
    renderers, the detail section registry, dynamic BQL fields; move the
-   overdue/stale badge and capabilities section. No plugin code.
+   overdue/stale badge and capabilities section. No plugin code. Merged
+   (`feat/plugin-slots`).
 2. **Board lanes.** Variable lane count and mode-keyed `BoardState` cache.
+   Open: `bt-otb.5`.
 3. **Plugin host.** `pkg/plugin`, config, `initialize`, `beads.sync`,
    `state.set`/`state.clear`, badges, sections and BQL fields from plugins,
-   `bt plugins`, the `testdata` test plugin, `docs/plugins.md`.
+   `bt plugins`, the `testdata` test plugin, `docs/plugins.md`. Merged
+   (`feat/plugin-host`).
 4. **Plugin actions.** `selectedIssue()`, `action.invoke`, key binding and conflicts, the action
-   menu, `ui.confirm`/`ui.select`/`ui.toast`, `--popup`.
-5. **Plugin swimlanes.** One mode per plugin field, on top of PR 2.
+   menu, `ui.confirm`/`ui.select`/`ui.toast`, `--popup`. Merged
+   (`feat/plugin-host`).
+5. **Plugin swimlanes.** One mode per plugin field, on top of step 2.
+   Open: `bt-otb.6`.
 
-Each PR follows bt's conventions: `type(scope): description` commits, README key
+The remaining bt work is tracked under the `bt-otb` epic in beadstui. Each
+branch follows bt's conventions: `type(scope): description` commits, README key
 tables kept in sync (guarded by `readme_keys_test.go`), `go build`, `go vet` and
 `go test ./...` clean.
 
@@ -516,25 +524,28 @@ tsk:
 
 ## First local version (2026-10-07)
 
-The user wants the feature usable without waiting for upstream. The first
-version is built on local stacked branches and narrows a few points of this
-spec; upstream PRs can widen them later.
+The user wanted the feature usable quickly. The first version was built on
+local stacked branches and narrows a few points of this spec; the follow-up
+beads listed with each point widen them.
 
 - The plugin action menu opens with `P`. `v` is bound in the epics view, and
   `P` is free in the list, board, tree and epics views.
 - Plugin actions are listed only in the action menu, not in the footer or
-  shortcuts sidebar.
+  shortcuts sidebar (`bt-otb.3`).
 - The pending spinner shows on list rows only; in the board, tree and epics
-  views a notice ("Dispatching tsk-a1b…") is shown instead. The 45s timeout is
-  also checked on the spinner tick, not only on data reloads.
+  views a notice ("Dispatching tsk-a1b…") is shown instead (`bt-otb.4`). The
+  45s timeout is also checked on the spinner tick, not only on data reloads.
 - `bt plugins` prints the configured plugins, their resolved commands and
-  whether they are enabled. Runtime failures appear as footer notices.
-- Board swimlanes per plugin field (PRs 2 and 5) are deferred; BQL filters
-  (`tsk.state in (waiting, lost)`) cover grouping meanwhile.
-- tsk's `since` for a bead seen for the first time is the time tsk first saw
-  it, because `beads.sync` does not carry `updated_at`.
-- tsk calls `bd ready` when `dispatch` is invoked and refuses beads that are
-  not ready, because `beads.sync` does not say whether a bead is blocked.
+  whether they are enabled. Runtime failures appear as footer notices
+  (`bt-otb.2`).
+- Board swimlanes per plugin field (steps 2 and 5) are deferred; BQL filters
+  (`tsk.state in (waiting, lost)`) cover grouping meanwhile (`bt-otb.5`,
+  `bt-otb.6`).
+- Resolved 2026-10-08 (`bt-otb.1`, `tsk-55e`): `beads.sync` now carries
+  `updated_at` and `blocked`. A bead's first state starts at `updated_at`
+  (the time tsk first saw it when `updated_at` is unset or in the future), and
+  tsk no longer calls `bd ready`: blocked beads get no dispatch action and
+  `dispatch` refuses them.
 - herdr is considered running when `herdr status server` prints
   `status: running`.
 
@@ -556,4 +567,4 @@ Checked on 2026-10-07 against beadstui `071a0794` and bd 1.3.1:
   dispatches plugin keys.
 
 Still to check by hand: herdr popups pass the terminal size and keys through to
-bt as they did for `tsk board`.
+bt as they did for `tsk board` (`tsk-kmz`).
