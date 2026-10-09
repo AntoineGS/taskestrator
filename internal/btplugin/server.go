@@ -268,6 +268,15 @@ func (s *Server) Model() *opencode.ModelRef {
 	return s.model
 }
 
+// confirm asks the user a yes/no question in bt. A dismissed prompt is no.
+func (s *Server) confirm(ctx context.Context, p ConfirmParams) (bool, error) {
+	var ok *bool
+	if err := s.Peer.Call(ctx, "ui.confirm", p, &ok); err != nil {
+		return false, err
+	}
+	return ok != nil && *ok, nil
+}
+
 // resolve scans the roots once (lazily) when some bead has no repo.
 func (s *Server) resolve(beads []Bead) {
 	need := false
@@ -492,7 +501,7 @@ func reviewWarning(dbs []string) string {
 	if len(dbs) == 1 {
 		subject = "1 project lacks"
 	}
-	return fmt.Sprintf(`%s the "review" status (%s); run in each: bd config set status.custom "review:wip"`, subject, list)
+	return fmt.Sprintf(`%s the "review" status (%s); dispatching offers to add it`, subject, list)
 }
 
 // onUpdate is the Loop.Update callback.
@@ -559,6 +568,7 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		OnDispatched: func(sessionID string) { loop.Refresh(sessionID) },
 		Model:        srv.Model,
 		Late:         func(t Toast) { go srv.toastAfterGap(ctx, t.Message, t.Tone) },
+		Confirm:      srv.confirm,
 	}
 	return srv.Serve(ctx, in, out)
 }

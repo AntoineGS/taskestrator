@@ -27,9 +27,10 @@ type Actions struct {
 	Herdr        herdr.Herdr                   // nil when herdr unavailable
 	HerdrUp      func() bool
 	RepoFor      func(b Bead) string
-	OnDispatched func(sessionID string)    // Loop.Refresh
-	Model        func() *opencode.ModelRef // model for new sessions; nil or nil result uses OpenCode's default
-	Late         func(t Toast)             // sends the outcome of a dispatch bt stopped waiting for; may be nil
+	OnDispatched func(sessionID string)                                   // Loop.Refresh
+	Model        func() *opencode.ModelRef                                // model for new sessions; nil or nil result uses OpenCode's default
+	Late         func(t Toast)                                            // sends the outcome of a dispatch bt stopped waiting for; may be nil
+	Confirm      func(ctx context.Context, p ConfirmParams) (bool, error) // asks the user in bt; nil refuses without asking
 
 	lateAfter time.Duration // lateDispatch when zero
 
@@ -172,6 +173,40 @@ func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	a.sent[k] = sentEntry{was: was, at: a.clock()}
 }
 
+// ensureReviewStatus makes sure the project has the review status agents set
+// when they finish, adding it to the project's bd config only when the user
+// agrees in bt.
+func (a *Actions) ensureReviewStatus(ctx context.Context, db, repo string) error {
+	has, err := a.Tracker.HasReviewStatus(ctx, repo)
+	if err != nil {
+		return Fail("check_failed", err.Error())
+	}
+	if has {
+		return nil
+	}
+	refused := Fail("no_review_status", `this project has no review status; run: bd config set status.custom "review:wip"`)
+	if a.Confirm == nil {
+		return refused
+	}
+	ok, err := a.Confirm(ctx, ConfirmParams{
+		Title:   "Add the review status?",
+		Message: fmt.Sprintf(`%s has no "review" status, which agents set when they finish. Add review:wip to its bd config?`, db),
+		Confirm: "Add",
+		Cancel:  "Cancel",
+	})
+	if err != nil {
+		logger.Printf("review status prompt for %s: %v", db, err)
+		return refused
+	}
+	if !ok {
+		return refused
+	}
+	if err := a.Tracker.AddReviewStatus(ctx, repo); err != nil {
+		return Fail("check_failed", "add review status: "+err.Error())
+	}
+	return nil
+}
+
 func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error) {
 	b, ok := a.Engine.Bead(k)
 	if !ok {
@@ -194,19 +229,16 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if b.Blocked {
 		return InvokeResult{}, Fail("not_ready", k.ID+" is blocked")
 	}
-	hasReview, err := a.Tracker.HasReviewStatus(ctx, repo)
-	if err != nil {
-		return InvokeResult{}, Fail("check_failed", err.Error())
-	}
-	if !hasReview {
-		return InvokeResult{}, Fail("no_review_status", `this project has no review status; run: bd config set status.custom "review:wip"`)
-	}
 	ignored, err := a.Git.IsIgnored(ctx, repo, ".worktrees/tsk-check")
 	if err != nil {
 		return InvokeResult{}, Fail("check_failed", err.Error())
 	}
 	if !ignored {
 		return InvokeResult{}, Fail("worktrees_not_ignored", ".worktrees/ is not git-ignored in this repo; add it to .gitignore first")
+	}
+	// The review check is the last gate because it may prompt the user.
+	if err := a.ensureReviewStatus(ctx, k.DB, repo); err != nil {
+		return InvokeResult{}, err
 	}
 	if busy := a.acquire(k); busy != nil {
 		return InvokeResult{}, busy

@@ -184,6 +184,83 @@ func TestDispatchFailed(t *testing.T) {
 	wantFail(t, err, "dispatch_failed")
 }
 
+// confirmWith makes h answer review prompts with ok and err, recording each
+// prompt.
+func confirmWith(h *actionsHarness, ok bool, err error) *[]ConfirmParams {
+	var asked []ConfirmParams
+	h.a.Confirm = func(_ context.Context, p ConfirmParams) (bool, error) {
+		asked = append(asked, p)
+		return ok, err
+	}
+	return &asked
+}
+
+func TestDispatchAddsReviewStatusWhenConfirmed(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.noReview = true
+	asked := confirmWith(h, true, nil)
+	if _, err := invoke(h, "dispatch", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 1 || !strings.Contains((*asked)[0].Message, "db") {
+		t.Fatalf("prompts = %+v", *asked)
+	}
+	got := h.r.calls()
+	if len(got) < 2 || got[0] != "addreviewstatus" || got[1] != "claim a" {
+		t.Fatalf("log = %v", got)
+	}
+}
+
+func TestDispatchReviewStatusNotAdded(t *testing.T) {
+	tests := []struct {
+		name string
+		ok   bool
+		err  error
+	}{
+		{"declined", false, nil},
+		{"prompt failed", false, errors.New("no_action")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+			h.r.noReview = true
+			confirmWith(h, tt.ok, tt.err)
+			_, err := invoke(h, "dispatch", "a")
+			re := wantFail(t, err, "no_review_status")
+			if !strings.Contains(re.Message, `bd config set status.custom "review:wip"`) {
+				t.Fatalf("message = %q", re.Message)
+			}
+			if len(h.r.calls()) != 0 {
+				t.Fatalf("must not change anything: %v", h.r.calls())
+			}
+		})
+	}
+}
+
+func TestDispatchReviewStatusAddFails(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.noReview = true
+	h.r.failOn = "addreviewstatus"
+	confirmWith(h, true, nil)
+	_, err := invoke(h, "dispatch", "a")
+	wantFail(t, err, "check_failed")
+	if slices.Contains(h.r.calls(), "claim a") {
+		t.Fatalf("dispatched anyway: %v", h.r.calls())
+	}
+}
+
+func TestDispatchChecksWorktreesBeforeAsking(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
+	h.r.noReview = true
+	h.r.unignored = true
+	asked := confirmWith(h, true, nil)
+	_, err := invoke(h, "dispatch", "a")
+	wantFail(t, err, "worktrees_not_ignored")
+	if len(*asked) != 0 {
+		t.Fatalf("asked before refusing: %+v", *asked)
+	}
+}
+
 func TestDispatchDoesNotAskBdReady(t *testing.T) {
 	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
 	if _, err := invoke(h, "dispatch", "a"); err != nil {

@@ -474,8 +474,11 @@ or herdr is not running; `jump` is omitted when herdr is not running.
 - `.tsk.toml` in a repository (`setup`, `prompt`) is unchanged.
 - The first time tsk sees a database in `beads.sync`, it runs
   `bd -C <repo> config get status.custom --json`. If `review` is missing, it
-  sends one `ui.toast` with the exact `bd config set status.custom` command. It
-  never changes Beads configuration itself.
+  sends one `ui.toast` saying dispatching offers to add it. On dispatch, a
+  missing `review` status prompts with `ui.confirm`; tsk adds `review:wip`
+  (keeping other custom statuses) only when the user confirms, and refuses the
+  dispatch otherwise (changed 2026-10-09, `tsk-pg5`). It never changes Beads
+  configuration without that confirmation.
 
 ## Error handling
 

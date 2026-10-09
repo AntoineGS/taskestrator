@@ -297,7 +297,7 @@ func TestReviewStatusToastOncePerDB(t *testing.T) {
 	eventually(t, func() bool { return len(r.out.toasts()) >= 1 })
 	time.Sleep(50 * time.Millisecond)
 	toasts := r.out.toasts()
-	want := `1 project lacks the "review" status (a); run in each: bd config set status.custom "review:wip"`
+	want := `1 project lacks the "review" status (a); dispatching offers to add it`
 	if len(toasts) != 1 || toasts[0].Message != want || toasts[0].Tone != "warn" {
 		t.Fatalf("toasts = %+v", toasts)
 	}
@@ -337,7 +337,7 @@ func TestReviewStatusOneCombinedToastAndBoundedChecks(t *testing.T) {
 	eventually(t, func() bool { return len(r.out.toasts()) >= 1 })
 	time.Sleep(50 * time.Millisecond)
 	toasts := r.out.toasts()
-	want := `7 projects lack the "review" status (d0, d1, d2, d3, d4 and 2 more); run in each: bd config set status.custom "review:wip"`
+	want := `7 projects lack the "review" status (d0, d1, d2, d3, d4 and 2 more); dispatching offers to add it`
 	if len(toasts) != 1 || toasts[0].Message != want || toasts[0].Tone != "warn" {
 		t.Fatalf("toasts = %+v", toasts)
 	}

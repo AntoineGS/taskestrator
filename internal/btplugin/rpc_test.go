@@ -288,6 +288,32 @@ func TestCall(t *testing.T) {
 	}
 }
 
+func TestServerConfirm(t *testing.T) {
+	for result, want := range map[string]bool{"true": true, "false": false, "null": false} {
+		t.Run(result, func(t *testing.T) {
+			hs, p := newHarness(t, nil)
+			s := &Server{Peer: p}
+			type answer struct {
+				ok  bool
+				err error
+			}
+			done := make(chan answer, 1)
+			go func() {
+				ok, err := s.confirm(context.Background(), ConfirmParams{Title: "t", Message: "m"})
+				done <- answer{ok, err}
+			}()
+			req := hs.read(t)
+			if string(req["method"]) != `"ui.confirm"` || !strings.Contains(string(req["params"]), `"message":"m"`) {
+				t.Fatalf("req = %v", req)
+			}
+			hs.send(t, `{"jsonrpc":"2.0","id":`+string(req["id"])+`,"result":`+result+`}`)
+			if got := <-done; got.err != nil || got.ok != want {
+				t.Fatalf("confirm = %+v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestCallContextCancel(t *testing.T) {
 	hs, p := newHarness(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())

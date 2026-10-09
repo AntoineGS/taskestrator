@@ -82,7 +82,7 @@ failures to stderr):
 | cannot tell which checkout `<id>` belongs to; add its parent to roots | `no_repo` | the task's checkout is unknown, so its tab cannot be found |
 | herdr is not running | `no_herdr` | start herdr |
 | `<id>` is blocked | `not_ready` | bt reports open blockers (status `blocked`, or an open `blocks` dependency) |
-| this project has no review status; run: … | `no_review_status` | the project lacks the `review` status |
+| this project has no review status; run: … | `no_review_status` | the project lacks the `review` status and you declined to add it |
 | .worktrees/ is not git-ignored in this repo; … | `worktrees_not_ignored` | add `.worktrees/` to `.gitignore` |
 | `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
 | `<id>` is `<state>` | `not_dispatchable` | the task is not queued or lost |
@@ -97,8 +97,10 @@ cloned after bt started is found after bt restarts.
 
 ### Per-project setup
 
-Each project needs the `review` status once (tsk warns when it is missing; run
-`bd config set status.custom "review:wip"`). `.worktrees/` must be git-ignored.
+Each project needs the `review` status once. When it is missing, dispatching
+asks whether to add `review:wip` to the project's bd config; you can also run
+`bd config set status.custom "review:wip"` yourself. `.worktrees/` must be
+git-ignored.
 
 An optional `.tsk.toml` in the repository:
 

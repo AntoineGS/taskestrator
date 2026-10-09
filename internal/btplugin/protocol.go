@@ -130,6 +130,14 @@ type InvokeResult struct {
 	Dismiss bool   `json:"dismiss,omitempty"`
 }
 
+// ConfirmParams are the params of a ui.confirm request to bt.
+type ConfirmParams struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	Confirm string `json:"confirm,omitempty"`
+	Cancel  string `json:"cancel,omitempty"`
+}
+
 type Toast struct {
 	Message string `json:"message"`
 	Tone    string `json:"tone,omitempty"`
