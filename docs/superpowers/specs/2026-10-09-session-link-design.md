@@ -75,9 +75,14 @@ Each decision returns a result (`linked`, `same`, `not_found`, `not_in_progress`
 ### `tsk link`
 
 ```
-tsk link --session <id> --dir <dir> --command <command>
+tsk link --session <id> [--workdir <dir>] --command <command>
 ```
 
+- The base directory is the session's own `location.directory` (the
+  directory OpenCode runs its shell commands in), fetched from OpenCode.
+  `--workdir` is the shell call's `workdir`: absolute, it replaces the base;
+  relative, it is joined to it. The command is parsed once before connecting,
+  so a command with no claim exits 0 without contacting OpenCode.
 - Splits the command into segments on `&&`, `||`, `;`, `|` and newlines,
   outside single quotes, double quotes and backslash escapes.
 - A segment `cd <path>` changes the directory used for the segments after it
@@ -86,6 +91,11 @@ tsk link --session <id> --dir <dir> --command <command>
   command's base name is `bd`, its first word that does not start with `-` is
   `update`, and it contains `--claim`, `--status in_progress`,
   `--status=in_progress` or `-s in_progress`.
+- bd's global flags before `update` are understood: `-C`/`--directory`
+  changes the segment's directory like `cd`; the values of `--actor`,
+  `--dolt-auto-commit` and `--mem-profile` are skipped; a segment with `--db`,
+  `--database` or `--global` targets another database and is ignored (the
+  manual action covers it).
 - Candidate IDs are the words after `update` that do not start with `-` and
   match `^[A-Za-z0-9][A-Za-z0-9_]*-[A-Za-z0-9._]+$`. A flag value that looks like
   an ID is harmless: step 2 of the link rule does not find it.
@@ -112,12 +122,11 @@ export default { id: "tsk.link", async setup(ctx) { /* ... */ } }
 - Acts only when `tool === "shell"`, `status === "completed"`, `input.command`
   is a string and it matches the pre-filter: it contains the words `bd` and
   `update`, and `--claim` or `in_progress`.
-- The directory is `input.workdir` resolved against `ctx.location.directory`,
-  or `ctx.location.directory` when there is no `workdir`.
-- Starts `tsk link --session <sessionID> --dir <dir> --command <command>`
-  detached with stdio ignored, and does not wait. Spawn errors (no `tsk` on
+- Starts `tsk link --session <sessionID> --command <command>`, plus
+  `--workdir <input.workdir>` when the call has one, detached with stdio
+  ignored, and does not wait. The plugin does not resolve directories. Spawn errors (no `tsk` on
   PATH) are swallowed. The hook never throws and never delays the tool call.
-- The pure parts (pre-filter, directory, arguments) are exported for the test.
+- The pure parts (pre-filter, arguments) are exported for the test.
 
 A `shell` call with `background: true` can finish after the hook fires; the
 claim may not have happened yet, step 2 skips it, and the manual action covers
@@ -196,16 +205,20 @@ Go (`make test`):
   `Refresh`, and the in-flight guard.
 
 JS: `opencode/tsk-link.test.mjs` with `node --test`, no dependencies: the
-pre-filter, the directory, the arguments, and that non-`shell`, failed and
+pre-filter, the arguments, and that non-`shell`, failed and
 non-matching calls start nothing. `make test` runs it after `go test`.
 
 Against the real tools, recorded in `docs/contract-check.md`:
 
 - the `execute.after` event for `shell`: `tool`, `sessionID`, `status`,
   `input.command`, `input.workdir`;
-- `ctx.location.directory` in a plugin loaded from
-  `~/.config/opencode/plugins/`;
-- `herdr agent list` fields `agent_session.source` and `agent_status`.
+- that a plugin in `~/.config/opencode/plugins/` sees `shell` calls of every
+  session, including sessions started through the API;
+- `herdr agent list` fields `agent`, `agent_session.source`,
+  `agent_session.value`, `agent_status` and `cwd` (checked 2026-10-09).
+- `bd show <missing> --json` exits 1 and prints
+  `{"error": "no issues found matching the provided IDs", ...}` on stdout
+  (bd 1.3.1, checked 2026-10-09).
 
 One manual end-to-end run: a hand-started OpenCode pane in herdr claims a
 throwaway task; bt shows its live state and `J` focuses the pane; `K` links a
