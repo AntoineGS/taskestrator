@@ -96,8 +96,9 @@ func (h CLI) Running(ctx context.Context) bool {
 	return err == nil && strings.Contains(string(data), "status: running")
 }
 
-func within(path, root string) bool {
-	path = filepath.Clean(path)
+// Within reports whether path is root or inside it.
+func Within(path, root string) bool {
+	path, root = filepath.Clean(path), filepath.Clean(root)
 	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
@@ -117,7 +118,7 @@ func (h CLI) WorkspaceFor(ctx context.Context, repo string) (string, bool, error
 		case p.Cwd == "":
 		case filepath.Clean(p.Cwd) == repo:
 			exact = append(exact, p.WorkspaceID)
-		case within(p.Cwd, repo):
+		case Within(p.Cwd, repo):
 			inside = append(inside, p.WorkspaceID)
 		}
 	}
@@ -179,4 +180,44 @@ func (h CLI) Focus(ctx context.Context, paneID string) error {
 	args := []string{"agent", "focus", paneID}
 	_, err := h.exec(ctx, args...)
 	return err
+}
+
+// Agent is an agent pane as herdr reports it.
+type Agent struct {
+	PaneID    string
+	Cwd       string
+	SessionID string // "" when herdr has no session for the pane
+	Source    string // who reported the session, such as "herdr:opencode"
+	Status    string // herdr's agent_status: idle, working, blocked or done
+}
+
+// AgentLister lists agent panes.
+type AgentLister interface {
+	Agents(ctx context.Context) ([]Agent, error)
+}
+
+func (h CLI) Agents(ctx context.Context) ([]Agent, error) {
+	var res struct {
+		Agents []struct {
+			PaneID  string `json:"pane_id"`
+			Cwd     string `json:"cwd"`
+			Status  string `json:"agent_status"`
+			Session *struct {
+				Value  string `json:"value"`
+				Source string `json:"source"`
+			} `json:"agent_session"`
+		} `json:"agents"`
+	}
+	if err := h.call(ctx, &res, "agent", "list"); err != nil {
+		return nil, err
+	}
+	out := make([]Agent, 0, len(res.Agents))
+	for _, a := range res.Agents {
+		ag := Agent{PaneID: a.PaneID, Cwd: a.Cwd, Status: a.Status}
+		if a.Session != nil {
+			ag.SessionID, ag.Source = a.Session.Value, a.Session.Source
+		}
+		out = append(out, ag)
+	}
+	return out, nil
 }

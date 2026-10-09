@@ -164,3 +164,39 @@ func TestRunning(t *testing.T) {
 		})
 	}
 }
+
+func TestAgents(t *testing.T) {
+	f := &fakeRun{out: map[string]string{"agent list": `{"id":"cli:agent:list","result":{"agents":[
+{"agent":"opencode","agent_session":{"agent":"opencode","kind":"id","source":"herdr:opencode","value":"ses_a"},"agent_status":"idle","cwd":"/src/repo","pane_id":"w1:p1"},
+{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"c-1"},"agent_status":"working","cwd":"/src/repo","pane_id":"w1:p2"},
+{"agent":"opencode","agent_status":"idle","cwd":"/src/repo","pane_id":"w1:p3"}]}}`}}
+	got, err := CLI{Exec: f.run}.Agents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Agent{
+		{PaneID: "w1:p1", Cwd: "/src/repo", SessionID: "ses_a", Source: "herdr:opencode", Status: "idle"},
+		{PaneID: "w1:p2", Cwd: "/src/repo", SessionID: "c-1", Source: "herdr:claude", Status: "working"},
+		{PaneID: "w1:p3", Cwd: "/src/repo", Status: "idle"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("agents = %+v, want %+v", got, want)
+	}
+}
+
+func TestWithin(t *testing.T) {
+	for _, c := range []struct {
+		path, root string
+		want       bool
+	}{
+		{"/src/repo", "/src/repo", true},
+		{"/src/repo/.worktrees/x", "/src/repo", true},
+		{"/src/repo/", "/src/repo", true},
+		{"/src/repository", "/src/repo", false},
+		{"/src", "/src/repo", false},
+	} {
+		if got := Within(c.path, c.root); got != c.want {
+			t.Errorf("Within(%q, %q) = %v", c.path, c.root, got)
+		}
+	}
+}
