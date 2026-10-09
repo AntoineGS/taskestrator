@@ -111,7 +111,7 @@ func TestInitializeRoundTrip(t *testing.T) {
 	for _, v := range f.Values {
 		ids = append(ids, v.ID)
 		switch v.ID {
-		case "queued", "unknown":
+		case "queued", "unknown", "untracked":
 			if v.Lane == nil || *v.Lane {
 				t.Errorf("%s lane = %v, want false", v.ID, v.Lane)
 			}
@@ -121,7 +121,7 @@ func TestInitializeRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	if got := strings.Join(ids, ","); got != "waiting,running,review,lost,unknown,queued" {
+	if got := strings.Join(ids, ","); got != "waiting,running,review,lost,unknown,queued,untracked" {
 		t.Fatalf("value order = %s", got)
 	}
 	if f.Values[0].Badge != "WAIT" || f.Values[0].Tone != "warn" || f.Values[5].Badge != "" {

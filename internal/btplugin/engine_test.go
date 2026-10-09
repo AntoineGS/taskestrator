@@ -59,15 +59,19 @@ func TestMapping(t *testing.T) {
 		actions []string
 	}{
 		{"closed", mkBead("a", "closed", "s"), run, false, envOK(), "", nil},
-		{"untracked", mkBead("a", "in_progress", ""), nil, false, envOK(), "", nil},
+		{"untracked", mkBead("a", "in_progress", ""), nil, false, envOK(), "untracked", []string{"link"}},
+		{"untracked no herdr", mkBead("a", "in_progress", ""), nil, false, Env{RepoFor: envOK().RepoFor}, "untracked", nil},
+		{"untracked no repo", mkBead("a", "in_progress", ""), nil, false, Env{HerdrUp: true, RepoFor: func(Bead) string { return "" }}, "untracked", nil},
+		{"untracked blocked bead", blocked(mkBead("a", "in_progress", "")), nil, false, envOK(), "untracked", []string{"link"}},
+		{"untracked blocked status", mkBead("a", "blocked", ""), nil, false, envOK(), "", nil},
 		{"review", mkBead("a", "review", "s"), run, false, envOK(), "review", nil},
 		{"queued", mkBead("a", "open", ""), nil, false, envOK(), "queued", []string{"dispatch"}},
 		{"queued no repo", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true, RepoFor: func(Bead) string { return "" }}, "queued", nil},
 		{"queued nil repofor", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true}, "queued", nil},
 		{"queued no herdr", mkBead("a", "open", ""), nil, false, Env{RepoFor: envOK().RepoFor}, "queued", nil},
 		{"queued blocked", blocked(mkBead("a", "open", "")), nil, false, envOK(), "queued", nil},
-		{"lost", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, envOK(), "lost", []string{"dispatch"}},
-		{"lost blocked", blocked(mkBead("a", "in_progress", "s")), &status.Snapshot{}, false, envOK(), "lost", nil},
+		{"lost", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, envOK(), "lost", []string{"dispatch", "link"}},
+		{"lost blocked", blocked(mkBead("a", "in_progress", "s")), &status.Snapshot{}, false, envOK(), "lost", []string{"link"}},
 		{"lost no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, Env{RepoFor: envOK().RepoFor}, "lost", nil},
 		{"waiting", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true, Forms: 1}, false, envOK(), "waiting", []string{"jump"}},
 		{"waiting no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true}, false, Env{}, "waiting", nil},
@@ -99,6 +103,14 @@ func TestMapping(t *testing.T) {
 				t.Fatalf("actions should be nil, got %#v", got.Actions)
 			}
 		})
+	}
+}
+
+func TestUntrackedHasNoSection(t *testing.T) {
+	e, _ := newEng()
+	set, _, _ := e.Sync([]Bead{mkBead("a", "in_progress", "")}, envOK())
+	if st := one(t, set); st.Sections != nil {
+		t.Fatalf("sections = %v", st.Sections)
 	}
 }
 

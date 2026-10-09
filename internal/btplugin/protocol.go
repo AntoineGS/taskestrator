@@ -164,12 +164,14 @@ func Manifest() PluginManifest {
 				{ID: "lost", Label: "Lost", Badge: "LOST", Tone: "error"},
 				{ID: "unknown", Label: "Unknown", Badge: "?", Tone: "muted", Lane: &no},
 				{ID: "queued", Label: "Queued", Lane: &no},
+				{ID: "untracked", Label: "Not linked", Lane: &no},
 			},
 		}},
 		Sections: []SectionDecl{{ID: "agent", Title: "Agent"}},
 		Actions: []ActionDecl{
 			{ID: "dispatch", Label: "Dispatch to agent", Key: "D"},
 			{ID: "jump", Label: "Jump to agent tab", Key: "J"},
+			{ID: "link", Label: "Link agent session", Key: "K"},
 		},
 	}
 }
