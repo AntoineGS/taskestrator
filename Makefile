@@ -8,6 +8,7 @@ install:
 
 test:
 	go test ./...
+	node --test opencode/*.test.mjs
 
 lint:
 	go vet ./...
