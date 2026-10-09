@@ -138,6 +138,18 @@ type ConfirmParams struct {
 	Cancel  string `json:"cancel,omitempty"`
 }
 
+// SelectParams are the params of a ui.select request to bt.
+type SelectParams struct {
+	Title   string         `json:"title"`
+	Options []SelectOption `json:"options"`
+}
+
+type SelectOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
 type Toast struct {
 	Message string `json:"message"`
 	Tone    string `json:"tone,omitempty"`

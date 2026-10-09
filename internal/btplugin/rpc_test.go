@@ -314,6 +314,32 @@ func TestServerConfirm(t *testing.T) {
 	}
 }
 
+func TestServerChoose(t *testing.T) {
+	for result, want := range map[string]string{`"ses_a"`: "ses_a", "null": ""} {
+		t.Run(result, func(t *testing.T) {
+			hs, p := newHarness(t, nil)
+			s := &Server{Peer: p}
+			type answer struct {
+				v   string
+				err error
+			}
+			done := make(chan answer, 1)
+			go func() {
+				v, err := s.choose(context.Background(), SelectParams{Title: "t", Options: []SelectOption{{Value: "ses_a", Label: "A"}}})
+				done <- answer{v, err}
+			}()
+			req := hs.read(t)
+			if string(req["method"]) != `"ui.select"` || !strings.Contains(string(req["params"]), `"value":"ses_a"`) {
+				t.Fatalf("req = %v", req)
+			}
+			hs.send(t, `{"jsonrpc":"2.0","id":`+string(req["id"])+`,"result":`+result+`}`)
+			if got := <-done; got.err != nil || got.v != want {
+				t.Fatalf("choose = %+v, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestCallContextCancel(t *testing.T) {
 	hs, p := newHarness(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())

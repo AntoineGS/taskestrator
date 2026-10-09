@@ -20,6 +20,7 @@ import (
 	"github.com/AntoineGS/taskestrator/internal/execx"
 	"github.com/AntoineGS/taskestrator/internal/gitwt"
 	"github.com/AntoineGS/taskestrator/internal/herdr"
+	"github.com/AntoineGS/taskestrator/internal/link"
 	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/status"
 	"github.com/AntoineGS/taskestrator/internal/tracker"
@@ -275,6 +276,18 @@ func (s *Server) confirm(ctx context.Context, p ConfirmParams) (bool, error) {
 		return false, err
 	}
 	return ok != nil && *ok, nil
+}
+
+// choose asks the user to pick an option in bt. A dismissed prompt is "".
+func (s *Server) choose(ctx context.Context, p SelectParams) (string, error) {
+	var v *string
+	if err := s.Peer.Call(ctx, "ui.select", p, &v); err != nil {
+		return "", err
+	}
+	if v == nil {
+		return "", nil
+	}
+	return *v, nil
 }
 
 // resolve scans the roots once (lazily) when some bead has no repo.
@@ -545,9 +558,11 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	// Assign interfaces only on success, so they never hold a typed nil pointer.
 	var h herdr.Herdr
+	var agents herdr.AgentLister
 	if _, err := exec.LookPath("herdr"); err == nil {
 		cli := herdr.New()
 		h = cli
+		agents = cli
 		srv.HerdrRunning = func() bool {
 			pctx, cancel := context.WithTimeout(ctx, herdrProbeTimeout)
 			defer cancel()
@@ -569,8 +584,23 @@ func Main(ctx context.Context, in io.Reader, out io.Writer) error {
 		Model:        srv.Model,
 		Late:         func(t Toast) { go srv.toastAfterGap(ctx, t.Message, t.Tone) },
 		Confirm:      srv.confirm,
+		Agents:       agents,
+		Linker:       newLinker(ctx, bd),
+		Select:       srv.choose,
 	}
 	return srv.Serve(ctx, in, out)
+}
+
+// newLinker builds Actions.Linker. Like dispatchDeps, it resolves the
+// OpenCode service on every call.
+func newLinker(ctx context.Context, bd link.Tracker) func() (link.Linker, error) {
+	return func() (link.Linker, error) {
+		c, err := opencode.FromService(ctx)
+		if err != nil {
+			return link.Linker{}, err
+		}
+		return link.Linker{Tracker: bd, OpenCode: c}, nil
+	}
 }
 
 // dispatchDeps builds Actions.Deps. It resolves the OpenCode service on every
