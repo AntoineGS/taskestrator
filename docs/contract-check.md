@@ -53,3 +53,10 @@ Implementers must handle:
 - Sessions created without `model` use OpenCode's default model, which failed in this run with a malformed tool call. tsk inherits whatever default OpenCode has, so it should surface `session.execution.failed`.
 
 2026-10-07: tsk's own TUI (`tsk board`, `tsk project`) was removed in favour of the bt plugin (`tsk plugin`).
+
+## Session linking (2026-10-09, bd 1.3.1, OpenCode 2.0.14)
+
+| Check | Command | Observed | Result |
+|---|---|---|---|
+| bd show of a missing ID | `bd show tsk-zzzz --json` | Exit 1; stdout `{"error": "no issues found matching the provided IDs", "hint": ..., "schema_version": 1}`. Text that is not an ID gives the same answer. | PASS |
+| herdr agent list fields | `herdr agent list` | Each agent has `agent`, `agent_session.{agent,kind,source,value}` (`source` `herdr:opencode`), `agent_status` (`idle`, `working`, `done`, ...), `cwd`, `pane_id`. | PASS |
