@@ -191,20 +191,8 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if !a.herdrUp() {
 		return InvokeResult{}, Fail("no_herdr", "herdr is not running")
 	}
-	if d.State == status.Queued {
-		ready, err := a.Tracker.Ready(ctx, repo)
-		if err != nil {
-			return InvokeResult{}, Fail("check_failed", err.Error())
-		}
-		found := false
-		for _, t := range ready {
-			if t.ID == k.ID {
-				found = true
-			}
-		}
-		if !found {
-			return InvokeResult{}, Fail("not_ready", k.ID+" is blocked")
-		}
+	if b.Blocked {
+		return InvokeResult{}, Fail("not_ready", k.ID+" is blocked")
 	}
 	hasReview, err := a.Tracker.HasReviewStatus(ctx, repo)
 	if err != nil {

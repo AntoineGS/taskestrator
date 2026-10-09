@@ -51,7 +51,7 @@ Run `bt -g` for the global view across projects. On a task:
 - `D` dispatches it: tsk claims the task, creates `.worktrees/<id>` on branch
   `task/<id>`, starts an OpenCode session with the task as its prompt, and
   opens a herdr tab attached to that session. It also re-dispatches a task whose
-  session is lost.
+  session is lost. Tasks bt reports as blocked are not offered for dispatch.
 - `J` jumps to the task's tab, reopening it if it was closed.
 - `P` opens the plugin action menu.
 
@@ -81,7 +81,7 @@ failures to stderr):
 | no checkout found for `<db>`; add its parent to roots | `no_repo` | no checkout was found for the task's database |
 | cannot tell which checkout `<id>` belongs to; add its parent to roots | `no_repo` | the task's checkout is unknown, so its tab cannot be found |
 | herdr is not running | `no_herdr` | start herdr |
-| `<id>` is blocked | `not_ready` | the task has open blockers |
+| `<id>` is blocked | `not_ready` | bt reports open blockers (status `blocked`, or an open `blocks` dependency) |
 | this project has no review status; run: … | `no_review_status` | the project lacks the `review` status |
 | .worktrees/ is not git-ignored in this repo; … | `worktrees_not_ignored` | add `.worktrees/` to `.gitignore` |
 | `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
