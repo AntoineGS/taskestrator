@@ -92,7 +92,7 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 		}
 	}
 	dispatch := func() {
-		if env.HerdrUp && env.RepoFor != nil && env.RepoFor(b) != "" {
+		if !b.Blocked && env.HerdrUp && env.RepoFor != nil && env.RepoFor(b) != "" {
 			actions = []string{"dispatch"}
 		}
 	}
@@ -119,9 +119,16 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 		return BeadState{}, false
 	}
 
+	// A bead's first state starts at its last update, the best bt can tell
+	// for a state that began before tsk was running; later changes start now.
 	s, seen := e.since[k]
 	if !seen || s.value != value {
-		s = sinceEntry{value: value, at: e.now()}
+		now := e.now()
+		at := now
+		if !seen && !b.UpdatedAt.IsZero() && !b.UpdatedAt.After(now) {
+			at = b.UpdatedAt
+		}
+		s = sinceEntry{value: value, at: at}
 		e.since[k] = s
 	}
 	at := s.at

@@ -25,6 +25,11 @@ func mkBead(id, st, session string) Bead {
 	return b
 }
 
+func blocked(b Bead) Bead {
+	b.Blocked = true
+	return b
+}
+
 func envOK() Env {
 	return Env{HerdrUp: true, RepoFor: func(Bead) string { return "/repo" }}
 }
@@ -60,7 +65,9 @@ func TestMapping(t *testing.T) {
 		{"queued no repo", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true, RepoFor: func(Bead) string { return "" }}, "queued", nil},
 		{"queued nil repofor", mkBead("a", "open", ""), nil, false, Env{HerdrUp: true}, "queued", nil},
 		{"queued no herdr", mkBead("a", "open", ""), nil, false, Env{RepoFor: envOK().RepoFor}, "queued", nil},
+		{"queued blocked", blocked(mkBead("a", "open", "")), nil, false, envOK(), "queued", nil},
 		{"lost", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, envOK(), "lost", []string{"dispatch"}},
+		{"lost blocked", blocked(mkBead("a", "in_progress", "s")), &status.Snapshot{}, false, envOK(), "lost", nil},
 		{"lost no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{}, false, Env{RepoFor: envOK().RepoFor}, "lost", nil},
 		{"waiting", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true, Forms: 1}, false, envOK(), "waiting", []string{"jump"}},
 		{"waiting no herdr", mkBead("a", "in_progress", "s"), &status.Snapshot{Exists: true}, false, Env{}, "waiting", nil},
@@ -133,6 +140,48 @@ func TestSinceKeptAndReset(t *testing.T) {
 	got = one(t, set)
 	if got.Fields["state"].Value != "waiting" || !got.Fields["state"].Since.Equal(c.t) {
 		t.Fatalf("since not reset on change: %+v", got.Fields["state"])
+	}
+}
+
+func TestSinceStartsAtUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name    string
+		updated time.Duration // relative to now; 0 = not set
+		want    time.Duration
+	}{
+		{"past", -time.Hour, -time.Hour},
+		{"unset", 0, 0},
+		{"future", time.Hour, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, c := newEng()
+			b := mkBead("a", "open", "")
+			if tt.updated != 0 {
+				b.UpdatedAt = c.t.Add(tt.updated)
+			}
+			set, _, _ := e.Sync([]Bead{b}, envOK())
+			if got := one(t, set).Fields["state"].Since; !got.Equal(c.t.Add(tt.want)) {
+				t.Fatalf("since = %v, want %v", got, c.t.Add(tt.want))
+			}
+		})
+	}
+}
+
+func TestSinceUsesNowAfterFirstState(t *testing.T) {
+	e, c := newEng()
+	updated := c.t.Add(-time.Hour)
+	b := mkBead("a", "in_progress", "s")
+	b.UpdatedAt = updated
+	e.Sync([]Bead{b}, envOK())
+	set, _ := e.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: true, Running: true}}, true, envOK())
+	if got := one(t, set).Fields["state"].Since; !got.Equal(updated) {
+		t.Fatalf("first since = %v, want updated_at %v", got, updated)
+	}
+	c.t = c.t.Add(time.Minute)
+	set, _ = e.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: true, Forms: 1}}, true, envOK())
+	if got := one(t, set).Fields["state"].Since; !got.Equal(c.t) {
+		t.Fatalf("since after change = %v, want %v", got, c.t)
 	}
 }
 

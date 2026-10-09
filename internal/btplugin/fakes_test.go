@@ -19,7 +19,6 @@ type recorder struct {
 	mu        sync.Mutex
 	log       []string
 	failOn    string
-	ready     []string
 	noReview  bool
 	unignored bool
 	panes     map[string]string
@@ -27,9 +26,11 @@ type recorder struct {
 	block     chan struct{} // when set, claim waits on it
 	entered   chan struct{} // signalled when claim starts
 
-	readyGate    chan struct{} // when set, the first Ready call waits on it
-	readyEntered chan struct{} // signalled when that first Ready call starts
-	readyCalls   int
+	readyCalls int
+
+	reviewGate    chan struct{} // when set, the first HasReviewStatus call waits on it
+	reviewEntered chan struct{} // signalled when that first HasReviewStatus call starts
+	reviewCalls   int
 
 	model *opencode.ModelRef // model of the last CreateSession
 }
@@ -54,17 +55,8 @@ func (r *recorder) calls() []string {
 func (r *recorder) Ready(context.Context, string) ([]tracker.Task, error) {
 	r.mu.Lock()
 	r.readyCalls++
-	first := r.readyCalls == 1 && r.readyGate != nil
 	r.mu.Unlock()
-	if first {
-		r.readyEntered <- struct{}{}
-		<-r.readyGate
-	}
-	var out []tracker.Task
-	for _, id := range r.ready {
-		out = append(out, tracker.Task{ID: id})
-	}
-	return out, nil
+	return nil, nil
 }
 func (r *recorder) List(context.Context, string) ([]tracker.Task, error) { return nil, nil }
 func (r *recorder) Show(_ context.Context, _, id string) (tracker.Task, error) {
@@ -88,7 +80,17 @@ func (r *recorder) SetMetadata(_ context.Context, _, id string, kv map[string]st
 func (r *recorder) UnsetMetadata(_ context.Context, _, id string, keys ...string) error {
 	return r.note("unsetmeta %s %s", id, strings.Join(keys, ","))
 }
-func (r *recorder) HasReviewStatus(context.Context, string) (bool, error) { return !r.noReview, nil }
+func (r *recorder) HasReviewStatus(context.Context, string) (bool, error) {
+	r.mu.Lock()
+	r.reviewCalls++
+	first := r.reviewCalls == 1 && r.reviewGate != nil
+	r.mu.Unlock()
+	if first {
+		r.reviewEntered <- struct{}{}
+		<-r.reviewGate
+	}
+	return !r.noReview, nil
+}
 func (r *recorder) AddReviewStatus(context.Context, string) error {
 	return r.note("addreviewstatus")
 }

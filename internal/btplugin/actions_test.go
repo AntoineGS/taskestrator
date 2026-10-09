@@ -25,7 +25,7 @@ type actionsHarness struct {
 func newActions(t *testing.T, repo string, beads ...Bead) *actionsHarness {
 	t.Helper()
 	captureLog(t)
-	r := &recorder{ready: []string{"a"}, panes: map[string]string{}}
+	r := &recorder{panes: map[string]string{}}
 	eng, _ := newEng()
 	eng.Sync(beads, Env{HerdrUp: true, RepoFor: func(Bead) string { return repo }})
 	h := &actionsHarness{r: r}
@@ -84,7 +84,10 @@ func TestDispatchRefusals(t *testing.T) {
 		{"no herdr", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) {
 			h.a.HerdrUp = func() bool { return false }
 		}, "no_herdr", "herdr is not running"},
-		{"not ready", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.ready = nil }, "not_ready", "a is blocked"},
+		{"blocked", "a", []Bead{blocked(mkBead("a", "open", ""))}, nil, "not_ready", "a is blocked"},
+		{"lost blocked", "a", []Bead{blocked(mkBead("a", "in_progress", "s"))}, func(h *actionsHarness) {
+			h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, Env{HerdrUp: true, RepoFor: func(Bead) string { return "/repo" }})
+		}, "not_ready", "a is blocked"},
 		{"no review status", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.noReview = true }, "no_review_status", `bd config set status.custom "review:wip"`},
 		{"worktrees not ignored", "a", []Bead{mkBead("a", "open", "")}, func(h *actionsHarness) { h.r.unignored = true }, "worktrees_not_ignored", ""},
 	}
@@ -181,12 +184,16 @@ func TestDispatchFailed(t *testing.T) {
 	wantFail(t, err, "dispatch_failed")
 }
 
-func TestDispatchLostSkipsReady(t *testing.T) {
-	h := newActions(t, t.TempDir(), mkBead("a", "in_progress", "s"))
-	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, Env{HerdrUp: true, RepoFor: func(Bead) string { return "/repo" }})
-	h.r.ready = nil
+func TestDispatchDoesNotAskBdReady(t *testing.T) {
+	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
 	if _, err := invoke(h, "dispatch", "a"); err != nil {
 		t.Fatal(err)
+	}
+	h.r.mu.Lock()
+	calls := h.r.readyCalls
+	h.r.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("bd ready called %d times", calls)
 	}
 }
 
@@ -347,16 +354,16 @@ func TestJumpLostRefused(t *testing.T) {
 
 func TestDispatchSentRaceDuringChecks(t *testing.T) {
 	h := newActions(t, t.TempDir(), mkBead("a", "open", ""))
-	h.r.readyGate = make(chan struct{})
-	h.r.readyEntered = make(chan struct{}, 1)
+	h.r.reviewGate = make(chan struct{})
+	h.r.reviewEntered = make(chan struct{}, 1)
 	bDone := make(chan error, 1)
 	go func() { _, err := invoke(h, "dispatch", "a"); bDone <- err }()
-	<-h.r.readyEntered // B has passed its early checks and sits in Ready
+	<-h.r.reviewEntered // B has passed its early checks and sits in HasReviewStatus
 
 	if _, err := invoke(h, "dispatch", "a"); err != nil { // A completes
 		t.Fatal(err)
 	}
-	close(h.r.readyGate)
+	close(h.r.reviewGate)
 	re := wantFail(t, <-bDone, "busy")
 	if !strings.Contains(re.Message, "just dispatched") {
 		t.Fatalf("message = %q", re.Message)
