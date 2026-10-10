@@ -54,10 +54,14 @@ Run `bt -g` for the global view across projects. On a task:
   session is lost. Tasks bt reports as blocked are not offered for dispatch.
 - `J` jumps to the task's tab, reopening it if it was closed.
 - `P` opens the plugin action menu.
+- `K` links a task that is in progress but has no agent session (shown as
+  "Not linked", `tsk.state = untracked`), or whose session is lost, to an
+  OpenCode pane in its checkout: pick the session from the list.
 
 The agent state is a BQL field, for example `tsk.state = waiting`. States are
 `waiting` (on a question, permission or idle), `running`, `review`, `lost`,
-`unknown` (OpenCode unreachable) and `queued`.
+`unknown` (OpenCode unreachable), `queued` and `untracked` (in progress with
+no linked session).
 
 The agent finishes by running `bd update <id> --status review`. Review the
 branch, merge it yourself, then run `bd close <id>`.
@@ -69,6 +73,24 @@ branch, merge it yourself, then run `bd close <id>`.
 type = "popup"
 command = "bt -g --popup"
 ```
+
+### Link tasks agents claim by themselves
+
+An agent you start by hand can claim a task with `bd update <id> --claim`
+(or `--status in_progress`). The tsk OpenCode plugin then links the task to
+the agent's session, so bt shows its state and `J` jumps to it. Install the
+plugin once, then restart the OpenCode service:
+
+```sh
+ln -s "$PWD/opencode/tsk-link.js" ~/.config/opencode/plugins/tsk-link.js
+opencode service restart
+```
+
+The plugin runs `tsk link` after each shell command that looks like a claim.
+`tsk link` links a task only when bd reports it in progress, and never
+replaces a session OpenCode still has. Each decision is a line in
+`~/.local/state/tsk/link.log` (`$XDG_STATE_HOME/tsk/link.log` when set).
+Claims it cannot see (an MCP tool, a script, `--db`) can be linked with `K`.
 
 ### Errors
 
@@ -83,13 +105,15 @@ failures to stderr):
 | herdr is not running | `no_herdr` | start herdr |
 | `<id>` is blocked | `not_ready` | bt reports open blockers (status `blocked`, or an open `blocks` dependency) |
 | `<db>` is not set up for dispatch; … | `needs_setup` | you declined the setup prompt; the message lists the steps to do by hand |
-| `<id>` is already being dispatched / was just dispatched; … | `busy` | wait for bt to refresh |
+| `<id>` is already being dispatched / was just dispatched (or linked); … | `busy` | wait for bt to refresh |
 | `<id>` is `<state>` | `not_dispatchable` | the task is not queued or lost |
 | (the `bd` or `git` error) | `check_failed` | a pre-dispatch check or setup step failed |
 | (the failing step) | `dispatch_failed` | a dispatch step failed; earlier steps are undone |
 | `<id>` has not been dispatched | `not_dispatched` | the task has no agent session to jump to |
 | `<id>`'s agent session is gone; press D … | `session_lost` | dispatch the task again |
 | (the herdr error) | `jump_failed` | the tab could not be focused or reopened |
+| no OpenCode pane in `<repo>`; start one in herdr or claim the task from an agent | `no_sessions` | `K` found no OpenCode pane in the task's checkout |
+| `<id>` is `<state>` / `<id>`: not in progress | `not_linkable` | the task is not in progress without a live session |
 
 tsk scans `roots` for checkouts once per plugin process, so a repository
 cloned after bt started is found after bt restarts.

@@ -93,7 +93,12 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 	}
 	dispatch := func() {
 		if !b.Blocked && env.HerdrUp && env.RepoFor != nil && env.RepoFor(b) != "" {
-			actions = []string{"dispatch"}
+			actions = append(actions, "dispatch")
+		}
+	}
+	link := func() {
+		if env.HerdrUp && env.RepoFor != nil && env.RepoFor(b) != "" {
+			actions = append(actions, "link")
 		}
 	}
 	switch d.State {
@@ -105,6 +110,7 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 	case status.Lost:
 		value = "lost"
 		dispatch()
+		link()
 	case status.Waiting:
 		value = "waiting"
 		jump()
@@ -114,6 +120,13 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 	case status.Unknown:
 		value = "unknown"
 		jump()
+	case status.Untracked:
+		if b.Status != "in_progress" {
+			delete(e.since, k)
+			return BeadState{}, false
+		}
+		value = "untracked"
+		link()
 	default:
 		delete(e.since, k)
 		return BeadState{}, false

@@ -138,6 +138,18 @@ type ConfirmParams struct {
 	Cancel  string `json:"cancel,omitempty"`
 }
 
+// SelectParams are the params of a ui.select request to bt.
+type SelectParams struct {
+	Title   string         `json:"title"`
+	Options []SelectOption `json:"options"`
+}
+
+type SelectOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
 type Toast struct {
 	Message string `json:"message"`
 	Tone    string `json:"tone,omitempty"`
@@ -164,12 +176,14 @@ func Manifest() PluginManifest {
 				{ID: "lost", Label: "Lost", Badge: "LOST", Tone: "error"},
 				{ID: "unknown", Label: "Unknown", Badge: "?", Tone: "muted", Lane: &no},
 				{ID: "queued", Label: "Queued", Lane: &no},
+				{ID: "untracked", Label: "Not linked", Lane: &no},
 			},
 		}},
 		Sections: []SectionDecl{{ID: "agent", Title: "Agent"}},
 		Actions: []ActionDecl{
 			{ID: "dispatch", Label: "Dispatch to agent", Key: "D"},
 			{ID: "jump", Label: "Jump to agent tab", Key: "J"},
+			{ID: "link", Label: "Link agent session", Key: "K"},
 		},
 	}
 }

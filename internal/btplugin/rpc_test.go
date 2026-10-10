@@ -111,7 +111,7 @@ func TestInitializeRoundTrip(t *testing.T) {
 	for _, v := range f.Values {
 		ids = append(ids, v.ID)
 		switch v.ID {
-		case "queued", "unknown":
+		case "queued", "unknown", "untracked":
 			if v.Lane == nil || *v.Lane {
 				t.Errorf("%s lane = %v, want false", v.ID, v.Lane)
 			}
@@ -121,7 +121,7 @@ func TestInitializeRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	if got := strings.Join(ids, ","); got != "waiting,running,review,lost,unknown,queued" {
+	if got := strings.Join(ids, ","); got != "waiting,running,review,lost,unknown,queued,untracked" {
 		t.Fatalf("value order = %s", got)
 	}
 	if f.Values[0].Badge != "WAIT" || f.Values[0].Tone != "warn" || f.Values[5].Badge != "" {
@@ -309,6 +309,32 @@ func TestServerConfirm(t *testing.T) {
 			hs.send(t, `{"jsonrpc":"2.0","id":`+string(req["id"])+`,"result":`+result+`}`)
 			if got := <-done; got.err != nil || got.ok != want {
 				t.Fatalf("confirm = %+v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestServerChoose(t *testing.T) {
+	for result, want := range map[string]string{`"ses_a"`: "ses_a", "null": ""} {
+		t.Run(result, func(t *testing.T) {
+			hs, p := newHarness(t, nil)
+			s := &Server{Peer: p}
+			type answer struct {
+				v   string
+				err error
+			}
+			done := make(chan answer, 1)
+			go func() {
+				v, err := s.choose(context.Background(), SelectParams{Title: "t", Options: []SelectOption{{Value: "ses_a", Label: "A"}}})
+				done <- answer{v, err}
+			}()
+			req := hs.read(t)
+			if string(req["method"]) != `"ui.select"` || !strings.Contains(string(req["params"]), `"value":"ses_a"`) {
+				t.Fatalf("req = %v", req)
+			}
+			hs.send(t, `{"jsonrpc":"2.0","id":`+string(req["id"])+`,"result":`+result+`}`)
+			if got := <-done; got.err != nil || got.v != want {
+				t.Fatalf("choose = %+v, want %q", got, want)
 			}
 		})
 	}

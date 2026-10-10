@@ -53,3 +53,13 @@ Implementers must handle:
 - Sessions created without `model` use OpenCode's default model, which failed in this run with a malformed tool call. tsk inherits whatever default OpenCode has, so it should surface `session.execution.failed`.
 
 2026-10-07: tsk's own TUI (`tsk board`, `tsk project`) was removed in favour of the bt plugin (`tsk plugin`).
+
+## Session linking (2026-10-09, bd 1.3.1, OpenCode 2.0.14)
+
+| Check | Command | Observed | Result |
+|---|---|---|---|
+| bd show of a missing ID | `bd show tsk-zzzz --json` | Exit 1; stdout `{"error": "no issues found matching the provided IDs", "hint": ..., "schema_version": 1}`. Text that is not an ID gives the same answer. | PASS |
+| herdr agent list fields | `herdr agent list` | Each agent has `agent`, `agent_session.{agent,kind,source,value}` (`source` `herdr:opencode`), `agent_status` (`idle`, `working`, `done`, ...), `cwd`, `pane_id`. | PASS |
+| Plugin sees a hand-started session (2026-10-10) | `tsk-link.js` symlinked into `~/.config/opencode/plugins/`, `opencode service restart`; `opencode` started in a new herdr tab in a worktree; prompt "Run exactly ...: bd update tsk-bxv --claim" | `link.log`: `tsk-bxv linked ses_ed95e4a6…`; bd metadata got `tsk.session` (the pane's session) and `tsk.worktree` (the worktree). Driving `tsk plugin` as bt: `waiting` with `[jump]`; `jump` returned `dismiss: true` and herdr focused that pane. | PASS |
+| Plugin sees an API-created session | Session created with `opencode api session.create` (model `anthropic/claude-haiku-5-5`), task claimed with `tsk.session` set to it (what `D` leaves), then the session's agent ran `bd update tsk-vbp --claim` | `link.log`: `tsk-vbp same ses_ed95c9db…`; metadata unchanged. | PASS |
+| Manual link (`K`) | Task claimed from a plain shell (not linked: no session); `tsk plugin` driven as bt with `beads.sync`, then `action.invoke link`, answering `ui.select` | `untracked` with `[link]`; `ui.select` offered only the herdr pane in the checkout (the API session has no pane); toast `Linked tsk-tto to …`; metadata written. Option labels are the session's OpenCode-generated title. | PASS |

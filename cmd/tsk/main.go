@@ -9,6 +9,7 @@ import (
 	"os/signal"
 
 	"github.com/AntoineGS/taskestrator/internal/btplugin"
+	"github.com/AntoineGS/taskestrator/internal/link"
 )
 
 const usage = `tsk is a bt plugin; bt starts it. Add it to ~/.config/bt/config.yaml:
@@ -21,20 +22,29 @@ const usage = `tsk is a bt plugin; bt starts it. Add it to ~/.config/bt/config.y
         model: "anthropic/claude-opus-5-5"   # optional
 
 usage:
-  tsk plugin    speak the bt plugin protocol on stdin/stdout (started by bt)`
+  tsk plugin    speak the bt plugin protocol on stdin/stdout (started by bt)
+  tsk link      link the tasks a shell command claimed to its OpenCode session
+                (run by the tsk OpenCode plugin; see the README)`
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "link" {
+		code := link.Main(ctx, args[1:], os.Stderr, link.Default())
+		cancel()
+		os.Exit(code)
+	}
+	err := run(ctx, args)
+	cancel()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "tsk:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func run(ctx context.Context, args []string) error {
 	if len(args) != 1 || args[0] != "plugin" {
 		return errors.New(usage)
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 	return btplugin.Main(ctx, os.Stdin, os.Stdout)
 }

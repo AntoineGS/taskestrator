@@ -9,6 +9,7 @@ import (
 
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
 	"github.com/AntoineGS/taskestrator/internal/gitwt"
+	"github.com/AntoineGS/taskestrator/internal/herdr"
 	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/tracker"
 )
@@ -36,6 +37,8 @@ type recorder struct {
 	reviewCalls   int
 
 	model *opencode.ModelRef // model of the last CreateSession
+
+	agents []herdr.Agent // returned by Agents
 }
 
 func (r *recorder) note(format string, args ...any) error {
@@ -166,4 +169,54 @@ func (r *recorder) shell(_ context.Context, dir string, args ...string) ([]byte,
 
 func (r *recorder) deps() dispatch.Deps {
 	return dispatch.Deps{Tracker: r, OpenCode: r, Herdr: r, Git: r, Shell: r.shell}
+}
+
+func (r *recorder) Agents(context.Context) ([]herdr.Agent, error) {
+	return r.agents, r.note("agents")
+}
+
+// linkWorld fakes what linking reads and writes: OpenCode sessions and bd
+// tasks.
+type linkWorld struct {
+	sessions map[string]opencode.Session
+	tasks    map[string]tracker.Task
+	set      []string // "dir id session worktree"
+}
+
+func (w *linkWorld) GetSession(_ context.Context, id string) (opencode.Session, error) {
+	s, ok := w.sessions[id]
+	if !ok {
+		return opencode.Session{}, fmt.Errorf("GET /api/session/%s: %w", id, opencode.ErrNotFound)
+	}
+	return s, nil
+}
+
+func (w *linkWorld) Root(ctx context.Context, id string) (string, error) {
+	s, err := w.GetSession(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if s.ParentID != "" {
+		return w.Root(ctx, s.ParentID)
+	}
+	return id, nil
+}
+
+func (w *linkWorld) Show(_ context.Context, _, id string) (tracker.Task, error) {
+	t, ok := w.tasks[id]
+	if !ok {
+		return tracker.Task{}, fmt.Errorf("bd show %s: %w", id, tracker.ErrNotFound)
+	}
+	return t, nil
+}
+
+func (w *linkWorld) SetMetadata(_ context.Context, dir, id string, kv map[string]string) error {
+	w.set = append(w.set, fmt.Sprintf("%s %s %s %s", dir, id, kv[tracker.MetaSession], kv[tracker.MetaWorktree]))
+	return nil
+}
+
+func ocSession(id, dir, title string) opencode.Session {
+	s := opencode.Session{ID: id, Title: title}
+	s.Location.Directory = dir
+	return s
 }

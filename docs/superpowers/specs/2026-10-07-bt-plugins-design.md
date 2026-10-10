@@ -430,10 +430,11 @@ The existing `status` rules, applied to each synced bead:
 | `status` result | Push |
 |---|---|
 | done (closed) | `state.clear` |
-| untracked (no `tsk.session`, not open) | `state.clear` |
+| untracked, status `in_progress` | `untracked`, `[link]` (changed 2026-10-09, `tsk-jqp`) |
+| untracked, other statuses | `state.clear` |
 | review | `review`, no actions |
 | queued | `queued`, `[dispatch]` |
-| lost | `lost`, `[dispatch]` |
+| lost | `lost`, `[dispatch, link]` |
 | waiting (question, permission or idle) | `waiting`, `[jump]` |
 | in progress | `running`, `[jump]` |
 | unknown (OpenCode unreachable) | `unknown`, `[jump]`, plus one `ui.toast` naming how to start the service |
@@ -465,6 +466,8 @@ or herdr is not running; `jump` is omitted when herdr is not running.
 - `jump`: focuses the pane whose `agent_session` matches, or reopens the tab
   with `opencode --session <id>` and the existing 15s focus retry. Returns
   `dismiss: true`.
+- `link` (added 2026-10-09, `tsk-jqp`): links an untracked or lost bead to an
+  OpenCode pane in its checkout; see `2026-10-09-session-link-design.md`.
 
 ### Configuration
 

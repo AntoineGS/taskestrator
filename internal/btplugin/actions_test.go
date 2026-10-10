@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
+	"github.com/AntoineGS/taskestrator/internal/herdr"
+	"github.com/AntoineGS/taskestrator/internal/link"
 	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/status"
+	"github.com/AntoineGS/taskestrator/internal/tracker"
 )
 
 type actionsHarness struct {
@@ -573,5 +576,168 @@ func TestSentPrunedOnInvoke(t *testing.T) {
 	h.a.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("stale sent entries kept: %d", n)
+	}
+}
+
+func newLinkActions(t *testing.T, beads ...Bead) (*actionsHarness, *linkWorld, *[]SelectParams) {
+	t.Helper()
+	h := newActions(t, "/repo", beads...)
+	w := &linkWorld{
+		sessions: map[string]opencode.Session{
+			"ses_a":   ocSession("ses_a", "/repo", "Fix the parser"),
+			"ses_b":   ocSession("ses_b", "/repo/.worktrees/x", "Other work"),
+			"ses_far": ocSession("ses_far", "/repository", "Elsewhere"),
+		},
+		tasks: map[string]tracker.Task{"a": {ID: "a", Status: "in_progress", Metadata: map[string]any{}}},
+	}
+	h.r.agents = []herdr.Agent{
+		{PaneID: "w1:p1", Cwd: "/repo", SessionID: "ses_a", Source: "herdr:opencode", Status: "idle"},
+		{PaneID: "w1:p2", Cwd: "/repo/.worktrees/x", SessionID: "ses_b", Source: "herdr:opencode", Status: "working"},
+		{PaneID: "w1:p5", Cwd: "/repo", SessionID: "ses_a", Source: "herdr:opencode", Status: "idle"},
+		{PaneID: "w2:p1", Cwd: "/repository", SessionID: "ses_far", Source: "herdr:opencode", Status: "idle"},
+		{PaneID: "w1:p3", Cwd: "/repo", SessionID: "c-1", Source: "herdr:claude", Status: "idle"},
+		{PaneID: "w1:p4", Cwd: "/repo", Status: "idle"},
+		{PaneID: "w1:p6", Cwd: "/repo", SessionID: "ses_gone", Source: "herdr:opencode", Status: "idle"},
+	}
+	h.a.Agents = h.r
+	h.a.Linker = func() (link.Linker, error) { return link.Linker{Tracker: w, OpenCode: w}, nil }
+	var asked []SelectParams
+	h.a.Select = func(_ context.Context, p SelectParams) (string, error) {
+		asked = append(asked, p)
+		return "ses_a", nil
+	}
+	return h, w, &asked
+}
+
+func TestLinkHappy(t *testing.T) {
+	h, w, asked := newLinkActions(t, mkBead("a", "in_progress", ""))
+	res, err := invoke(h, "link", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Toast == nil || res.Toast.Tone != "ok" || res.Toast.Message != "Linked a to Fix the parser" {
+		t.Fatalf("toast = %+v", res.Toast)
+	}
+	want := []SelectOption{
+		{Value: "ses_a", Label: "Fix the parser", Description: "., idle"},
+		{Value: "ses_b", Label: "Other work", Description: ".worktrees/x, working"},
+	}
+	if len(*asked) != 1 || (*asked)[0].Title != "Link a to an agent session" || !slices.Equal((*asked)[0].Options, want) {
+		t.Fatalf("asked = %+v", *asked)
+	}
+	if !slices.Equal(w.set, []string{"/repo a ses_a /repo"}) {
+		t.Fatalf("set = %v", w.set)
+	}
+	if !slices.Equal(h.dispatched, []string{"ses_a"}) {
+		t.Fatalf("refreshed = %v", h.dispatched)
+	}
+}
+
+func TestLinkLostBead(t *testing.T) {
+	h, w, _ := newLinkActions(t, mkBead("a", "in_progress", "s"))
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, envOK())
+	w.tasks["a"] = tracker.Task{ID: "a", Status: "in_progress", Metadata: map[string]any{tracker.MetaSession: "s"}}
+	if _, err := invoke(h, "link", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(w.set, []string{"/repo a ses_a /repo"}) {
+		t.Fatalf("set = %v", w.set)
+	}
+}
+
+func TestLinkBlocksDispatchUntilSync(t *testing.T) {
+	h, _, _ := newLinkActions(t, mkBead("a", "in_progress", "s"))
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: false}}, true, envOK())
+	if _, err := invoke(h, "link", "a"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := invoke(h, "dispatch", "a")
+	if re := wantFail(t, err, "busy"); re.Message != "a was just linked; waiting for bt to refresh" {
+		t.Fatalf("message = %q", re.Message)
+	}
+	if len(h.r.calls()) != 1 { // only the agents listing from the link
+		t.Fatalf("dispatch ran: %v", h.r.calls())
+	}
+	// bt syncs the link: the guard lets go.
+	h.a.Engine.Sync([]Bead{mkBead("a", "in_progress", "ses_a")}, envOK())
+	h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"ses_a": {Exists: true}}, true, envOK())
+	_, err = invoke(h, "link", "a")
+	wantFail(t, err, "not_linkable")
+}
+
+func TestLinkDismissedOrPromptFails(t *testing.T) {
+	for name, sel := range map[string]func(context.Context, SelectParams) (string, error){
+		"dismissed":    func(context.Context, SelectParams) (string, error) { return "", nil },
+		"prompt error": func(context.Context, SelectParams) (string, error) { return "", errors.New("no_action") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, w, _ := newLinkActions(t, mkBead("a", "in_progress", ""))
+			h.a.Select = sel
+			res, err := invoke(h, "link", "a")
+			if err != nil || res.Toast != nil || len(w.set) != 0 || len(h.dispatched) != 0 {
+				t.Fatalf("res = %+v, err = %v, set = %v", res, err, w.set)
+			}
+		})
+	}
+}
+
+func TestLinkNoSessions(t *testing.T) {
+	h, _, asked := newLinkActions(t, mkBead("a", "in_progress", ""))
+	h.r.agents = h.r.agents[3:] // sibling directory, claude, no session, and a gone session
+	_, err := invoke(h, "link", "a")
+	re := wantFail(t, err, "no_sessions")
+	if !strings.Contains(re.Message, "no OpenCode pane in /repo") {
+		t.Fatalf("message = %q", re.Message)
+	}
+	if len(*asked) != 0 {
+		t.Fatal("must not prompt without options")
+	}
+}
+
+func TestLinkRefusals(t *testing.T) {
+	tests := []struct {
+		name  string
+		bead  Bead
+		tweak func(h *actionsHarness)
+		typ   string
+	}{
+		{"open", mkBead("a", "open", ""), nil, "not_linkable"},
+		{"running", mkBead("a", "in_progress", "s"), func(h *actionsHarness) {
+			h.a.Engine.SetSnapshots(map[string]*status.Snapshot{"s": {Exists: true, Running: true}}, true, envOK())
+		}, "not_linkable"},
+		{"no repo", mkBead("a", "in_progress", ""), func(h *actionsHarness) { h.a.RepoFor = func(Bead) string { return "" } }, "no_repo"},
+		{"no herdr", mkBead("a", "in_progress", ""), func(h *actionsHarness) { h.a.HerdrUp = func() bool { return false } }, "no_herdr"},
+		{"opencode down", mkBead("a", "in_progress", ""), func(h *actionsHarness) {
+			h.a.Linker = func() (link.Linker, error) { return link.Linker{}, errors.New("opencode service status: exit 1") }
+		}, "check_failed"},
+		{"busy", mkBead("a", "in_progress", ""), func(h *actionsHarness) {
+			h.a.inflight = map[BeadKey]string{{DB: "db", ID: "a"}: "dispatched"}
+		}, "busy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, w, _ := newLinkActions(t, tt.bead)
+			if tt.tweak != nil {
+				tt.tweak(h)
+			}
+			_, err := invoke(h, "link", "a")
+			wantFail(t, err, tt.typ)
+			if len(w.set) != 0 {
+				t.Fatalf("set = %v", w.set)
+			}
+		})
+	}
+	h, _, _ := newLinkActions(t)
+	_, err := invoke(h, "link", "zz")
+	wantFail(t, err, "unknown_bead")
+}
+
+func TestLinkRuleRefuses(t *testing.T) {
+	h, w, _ := newLinkActions(t, mkBead("a", "in_progress", ""))
+	w.tasks["a"] = tracker.Task{ID: "a", Status: "open", Metadata: map[string]any{}}
+	_, err := invoke(h, "link", "a")
+	re := wantFail(t, err, "not_linkable")
+	if re.Message != "a: not in progress" {
+		t.Fatalf("message = %q", re.Message)
 	}
 }

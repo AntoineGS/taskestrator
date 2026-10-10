@@ -14,12 +14,13 @@ import (
 	"github.com/AntoineGS/taskestrator/internal/dispatch"
 	"github.com/AntoineGS/taskestrator/internal/gitwt"
 	"github.com/AntoineGS/taskestrator/internal/herdr"
+	"github.com/AntoineGS/taskestrator/internal/link"
 	"github.com/AntoineGS/taskestrator/internal/opencode"
 	"github.com/AntoineGS/taskestrator/internal/status"
 	"github.com/AntoineGS/taskestrator/internal/tracker"
 )
 
-// Actions runs the plugin's dispatch and jump actions.
+// Actions runs the plugin's dispatch, jump and link actions.
 type Actions struct {
 	Engine       *Engine
 	Tracker      tracker.Tracker
@@ -28,23 +29,28 @@ type Actions struct {
 	Herdr        herdr.Herdr                   // nil when herdr unavailable
 	HerdrUp      func() bool
 	RepoFor      func(b Bead) string
-	OnDispatched func(sessionID string)                                   // Loop.Refresh
-	Model        func() *opencode.ModelRef                                // model for new sessions; nil or nil result uses OpenCode's default
-	Late         func(t Toast)                                            // sends the outcome of a dispatch bt stopped waiting for; may be nil
-	Confirm      func(ctx context.Context, p ConfirmParams) (bool, error) // asks the user in bt; nil refuses without asking
+	OnDispatched func(sessionID string)                                    // Loop.Refresh, after a dispatch or a link
+	Model        func() *opencode.ModelRef                                 // model for new sessions; nil or nil result uses OpenCode's default
+	Late         func(t Toast)                                             // sends the outcome of a dispatch bt stopped waiting for; may be nil
+	Confirm      func(ctx context.Context, p ConfirmParams) (bool, error)  // asks the user in bt; nil refuses without asking
+	Agents       herdr.AgentLister                                         // nil when herdr is unavailable
+	Linker       func() (link.Linker, error)                               // builds a linker; errors when OpenCode is unreachable
+	Select       func(ctx context.Context, p SelectParams) (string, error) // asks the user to pick in bt; "" when dismissed
 
 	lateAfter time.Duration // lateDispatch when zero
 
 	mu       sync.Mutex
-	inflight map[BeadKey]bool
+	inflight map[BeadKey]string // the action running on a bead: "dispatched" or "linked"
 	sent     map[BeadKey]sentEntry
 	now      func() time.Time // time.Now when nil
 }
 
-// sentEntry records a finished dispatch until bt's sync shows it: was is the
-// session the bead had before, and a bead still showing it is not yet updated.
+// sentEntry records a finished dispatch or link until bt's sync shows it: was
+// is the session the bead had before, and a bead still showing it is not yet
+// updated. did is "dispatched" or "linked".
 type sentEntry struct {
 	was string
+	did string
 	at  time.Time
 }
 
@@ -66,6 +72,8 @@ func (a *Actions) Invoke(ctx context.Context, p InvokeParams) (InvokeResult, err
 		return res, err
 	case "jump":
 		return a.jump(ctx, BeadKey{DB: p.Bead.DB, ID: p.Bead.ID})
+	case "link":
+		return a.linkSession(ctx, BeadKey{DB: p.Bead.DB, ID: p.Bead.ID})
 	}
 	return InvokeResult{}, Fail("unknown_action", "unknown action "+p.Action)
 }
@@ -127,43 +135,49 @@ func (a *Actions) prune() {
 	}
 }
 
-func (a *Actions) justSent(k BeadKey) bool {
+// justSent refuses k while its last dispatch or link is not yet in bt's sync.
+func (a *Actions) justSent(k BeadKey) *RPCError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	e, ok := a.sent[k]
-	return ok && !a.stale(k, e)
+	if e, ok := a.sent[k]; ok && !a.stale(k, e) {
+		return errJustSent(k.ID, e.did)
+	}
+	return nil
 }
 
-var errJustSent = func(id string) *RPCError {
-	return Fail("busy", id+" was just dispatched; waiting for bt to refresh")
+func errJustSent(id, did string) *RPCError {
+	return Fail("busy", id+" was just "+did+"; waiting for bt to refresh")
 }
 
-// acquire takes the in-flight mark unless k is in flight or was just
-// dispatched; both checks and the mark are one atomic step.
-func (a *Actions) acquire(k BeadKey) *RPCError {
+// acquire marks k as being doing ("dispatched" or "linked") unless an action
+// is in flight on k or k was just dispatched or linked; both checks and the
+// mark are one atomic step.
+func (a *Actions) acquire(k BeadKey, doing string) *RPCError {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.inflight[k] {
-		return Fail("busy", k.ID+" is already being dispatched")
+	if was, ok := a.inflight[k]; ok {
+		return Fail("busy", k.ID+" is already being "+was)
 	}
 	if e, ok := a.sent[k]; ok {
 		if !a.stale(k, e) {
-			return errJustSent(k.ID)
+			return errJustSent(k.ID, e.did)
 		}
 		delete(a.sent, k)
 	}
 	if a.inflight == nil {
-		a.inflight = map[BeadKey]bool{}
+		a.inflight = map[BeadKey]string{}
 	}
-	a.inflight[k] = true
+	a.inflight[k] = doing
 	return nil
 }
 
-// finish releases the in-flight mark; a successful dispatch records its sent
-// entry in the same step, so no caller can slip between release and record.
+// finish releases the in-flight mark; a successful dispatch or link records
+// its sent entry in the same step, so no caller can slip between release and
+// record.
 func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	did := a.inflight[k]
 	delete(a.inflight, k)
 	if !sent {
 		return
@@ -171,7 +185,7 @@ func (a *Actions) finish(k BeadKey, sent bool, was string) {
 	if a.sent == nil {
 		a.sent = map[BeadKey]sentEntry{}
 	}
-	a.sent[k] = sentEntry{was: was, at: a.clock()}
+	a.sent[k] = sentEntry{was: was, did: did, at: a.clock()}
 }
 
 // worktreeCheck is a path inside .worktrees/ used to test the ignore rule.
@@ -270,8 +284,8 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if d.State != status.Queued && d.State != status.Lost {
 		return InvokeResult{}, Fail("not_dispatchable", fmt.Sprintf("%s is %s", k.ID, d.State))
 	}
-	if a.justSent(k) {
-		return InvokeResult{}, errJustSent(k.ID)
+	if busy := a.justSent(k); busy != nil {
+		return InvokeResult{}, busy
 	}
 	repo := a.RepoFor(b)
 	if repo == "" {
@@ -287,7 +301,7 @@ func (a *Actions) dispatch(ctx context.Context, k BeadKey) (InvokeResult, error)
 	if err := a.setUpProject(ctx, k.DB, repo); err != nil {
 		return InvokeResult{}, err
 	}
-	if busy := a.acquire(k); busy != nil {
+	if busy := a.acquire(k, "dispatched"); busy != nil {
 		return InvokeResult{}, busy
 	}
 	sent := false
@@ -360,4 +374,117 @@ func (a *Actions) jump(ctx context.Context, k BeadKey) (InvokeResult, error) {
 		return InvokeResult{}, Fail("jump_failed", err.Error())
 	}
 	return InvokeResult{Dismiss: true}, nil
+}
+
+const opencodeSource = "herdr:opencode"
+
+// linkSession links an untracked or lost bead to an OpenCode pane the user
+// picks among those in the bead's checkout.
+func (a *Actions) linkSession(ctx context.Context, k BeadKey) (InvokeResult, error) {
+	b, ok := a.Engine.Bead(k)
+	if !ok {
+		return InvokeResult{}, Fail("unknown_bead", "unknown bead "+k.ID)
+	}
+	d, _ := a.Engine.Display(k)
+	if d.State != status.Lost && (d.State != status.Untracked || b.Status != "in_progress") {
+		return InvokeResult{}, Fail("not_linkable", fmt.Sprintf("%s is %s", k.ID, d.State))
+	}
+	repo := a.RepoFor(b)
+	if repo == "" {
+		return InvokeResult{}, Fail("no_repo", fmt.Sprintf("no checkout found for %s; add its parent to roots", k.DB))
+	}
+	if !a.herdrUp() || a.Agents == nil {
+		return InvokeResult{}, Fail("no_herdr", "herdr is not running")
+	}
+	if a.Linker == nil || a.Select == nil {
+		return InvokeResult{}, Fail("unavailable", "linking is not available")
+	}
+	if busy := a.acquire(k, "linked"); busy != nil {
+		return InvokeResult{}, busy
+	}
+	linked := false
+	defer func() { a.finish(k, linked, metaString(b, tracker.MetaSession)) }()
+
+	lk, err := a.Linker()
+	if err != nil {
+		return InvokeResult{}, Fail("check_failed", err.Error())
+	}
+	agents, err := a.Agents.Agents(ctx)
+	if err != nil {
+		return InvokeResult{}, Fail("check_failed", err.Error())
+	}
+	opts := sessionOptions(ctx, lk, repo, agents)
+	if len(opts) == 0 {
+		return InvokeResult{}, Fail("no_sessions", fmt.Sprintf("no OpenCode pane in %s; start one in herdr or claim the task from an agent", repo))
+	}
+	choice, err := a.Select(ctx, SelectParams{Title: "Link " + k.ID + " to an agent session", Options: opts})
+	if err != nil {
+		logger.Printf("link prompt for %s: %v", k.ID, err)
+		return InvokeResult{}, nil
+	}
+	if choice == "" {
+		return InvokeResult{}, nil
+	}
+	out, err := lk.Link(ctx, repo, k.ID, choice)
+	if err != nil {
+		return InvokeResult{}, Fail("check_failed", err.Error())
+	}
+	if out.Result != link.Linked && out.Result != link.Same {
+		return InvokeResult{}, Fail("not_linkable", k.ID+": "+refusal(out.Result))
+	}
+	// Same leaves the bead as bt already shows it, so there is nothing to wait for.
+	linked = out.Result == link.Linked
+	if a.OnDispatched != nil {
+		a.OnDispatched(out.Root)
+	}
+	title := choice
+	for _, o := range opts {
+		if o.Value == choice {
+			title = o.Label
+		}
+	}
+	return InvokeResult{Toast: &Toast{Message: fmt.Sprintf("Linked %s to %s", k.ID, title), Tone: "ok"}}, nil
+}
+
+func refusal(r link.Result) string {
+	switch r {
+	case link.NotFound:
+		return "bd has no such task"
+	case link.NotInProgress:
+		return "not in progress"
+	case link.LiveSession:
+		return "already linked to a live session"
+	}
+	return string(r)
+}
+
+// sessionOptions lists the OpenCode panes in repo as choices, once per
+// session, leaving out sessions OpenCode cannot load.
+func sessionOptions(ctx context.Context, lk link.Linker, repo string, agents []herdr.Agent) []SelectOption {
+	var opts []SelectOption
+	seen := map[string]bool{}
+	for _, ag := range agents {
+		if ag.Source != opencodeSource || ag.SessionID == "" || seen[ag.SessionID] || !herdr.Within(ag.Cwd, repo) {
+			continue
+		}
+		seen[ag.SessionID] = true
+		s, err := lk.OpenCode.GetSession(ctx, ag.SessionID)
+		if err != nil {
+			logger.Printf("link: session %s of pane %s: %v", ag.SessionID, ag.PaneID, err)
+			continue
+		}
+		title := s.Title
+		if title == "" {
+			title = ag.SessionID
+		}
+		desc, err := filepath.Rel(repo, ag.Cwd)
+		if err != nil {
+			desc = ag.Cwd
+		}
+		if ag.Status != "" {
+			desc += ", " + ag.Status
+		}
+		opts = append(opts, SelectOption{Value: ag.SessionID, Label: title, Description: desc})
+	}
+	return opts
 }
