@@ -104,6 +104,9 @@ func (e *Engine) state(b Bead, env Env) (BeadState, bool) {
 	switch d.State {
 	case status.Review:
 		value = "review"
+		if metaString(b, tracker.MetaSession) != "" {
+			jump()
+		}
 	case status.Queued:
 		value = "queued"
 		dispatch()

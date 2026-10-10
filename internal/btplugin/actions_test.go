@@ -355,6 +355,32 @@ func TestJump(t *testing.T) {
 	}
 }
 
+func TestJumpReviewFocusesPane(t *testing.T) {
+	h := newActions(t, "/repo", mkBead("a", "review", "s"))
+	h.r.panes["s"] = "w1:p1"
+	if _, err := invoke(h, "jump", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.r.calls(); !slices.Equal(got, []string{"paneforsession s", "focus w1:p1"}) {
+		t.Fatalf("log = %v", got)
+	}
+}
+
+func TestJumpReviewOpensTabInRepoWhenWorktreeRemoved(t *testing.T) {
+	repo := t.TempDir()
+	b := mkBead("a", "review", "s")
+	b.Metadata["tsk.worktree"] = json.RawMessage(`"` + filepath.Join(repo, ".worktrees", "a") + `"`)
+	h := newActions(t, "", b)
+	if _, err := invoke(h, "jump", "a"); err != nil {
+		t.Fatal(err)
+	}
+	got := h.r.calls()
+	if !slices.ContainsFunc(got, func(c string) bool { return strings.HasPrefix(c, "createtab ") && strings.Contains(c, " "+repo+" ") }) ||
+		!slices.ContainsFunc(got, func(c string) bool { return strings.HasSuffix(c, ":p9 opencode --session s") }) {
+		t.Fatalf("tab not opened in the checkout: %v", got)
+	}
+}
+
 func TestJumpRefusals(t *testing.T) {
 	h := newActions(t, "/repo", mkBead("a", "open", ""), mkBead("b", "in_progress", "s"))
 	_, err := invoke(h, "jump", "a")

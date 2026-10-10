@@ -336,6 +336,27 @@ func TestJumpMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestJumpFallsBackToRepoWhenWorktreeRemoved(t *testing.T) {
+	repo := t.TempDir()
+	r := &recorder{hasWS: true}
+	tgt := Target{Repo: repo, Project: "se", Worktree: "/nonexistent/wt", TaskID: "se-1", Title: "Fix", SessionID: "ses_a"}
+	if err := Jump(context.Background(), r, tgt); err != nil {
+		t.Fatal(err)
+	}
+	want := "paneforsession ses_a|workspacefor|createtab w1 " + repo + " se-1 Fix|run w1:p9 opencode --session ses_a|focus w1:p9"
+	if strings.Join(r.log, "|") != want {
+		t.Fatalf("log = %v", r.log)
+	}
+}
+
+func TestJumpMissingWorktreeAndRepo(t *testing.T) {
+	r := &recorder{}
+	err := Jump(context.Background(), r, Target{Repo: "/nonexistent/repo", Worktree: "/nonexistent/wt", SessionID: "ses_a"})
+	if err == nil || !strings.Contains(err.Error(), "/nonexistent/wt") || !strings.Contains(err.Error(), "/nonexistent/repo") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestTabLabel(t *testing.T) {
 	if got := TabLabel("se-1", strings.Repeat("x", 40)); got != "se-1 "+strings.Repeat("x", 29)+"…" {
 		t.Fatalf("got %q", got)

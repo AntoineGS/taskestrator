@@ -63,7 +63,9 @@ var (
 	focusTimeout  = 15 * time.Second
 )
 
-// Jump focuses the pane running the task's session, opening one when none exists.
+// Jump focuses the pane running the task's session, opening one when none
+// exists. The tab opens in the task's worktree, or in the repository checkout
+// once the worktree has been removed (as after a merge).
 func Jump(ctx context.Context, h herdr.Herdr, t Target) error {
 	if t.SessionID == "" {
 		return errors.New("task has not been dispatched")
@@ -75,7 +77,13 @@ func Jump(ctx context.Context, h herdr.Herdr, t Target) error {
 	opened := !ok
 	if !ok {
 		if _, err := os.Stat(t.Worktree); err != nil {
-			return fmt.Errorf("worktree %s is missing: %w", t.Worktree, err)
+			if t.Repo == "" {
+				return fmt.Errorf("worktree %s is missing: %w", t.Worktree, err)
+			}
+			if _, rerr := os.Stat(t.Repo); rerr != nil {
+				return fmt.Errorf("worktree %s and checkout %s are missing: %w", t.Worktree, t.Repo, rerr)
+			}
+			t.Worktree = t.Repo
 		}
 		if pane, err = OpenTab(ctx, h, t); err != nil {
 			return err
